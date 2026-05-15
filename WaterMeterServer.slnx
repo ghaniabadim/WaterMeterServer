@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="Infrastructure/Infrastructure.csproj" Id="8e6d6534-84f9-4f7a-8efe-f42f18283309" />
+    <Project Path="WaterMeterServer.Domain/WaterMeterServer.Domain.csproj" Id="f7858c20-21d6-469b-a59e-1d518ca418b4" />
+  </Folder>
+</Solution>
