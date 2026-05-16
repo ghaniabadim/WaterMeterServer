@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-WorkerService-93feaced-25d3-4805-99f3-ba73ee132164</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.8" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Infrastructure\WaterMeterServer.Infrastructure.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Application\WaterMeterServer.Application.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Domain\WaterMeterServer.Domain.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Networking\WaterMeterServer.Networking.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Protocol\WaterMeterServer.Protocol.csproj" />
+  </ItemGroup>
+</Project>

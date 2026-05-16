@@ -11,15 +11,15 @@ namespace WaterMeterServer.Infrastructure.Stores
         public uint GenerateSessionId(string meterSerialNumber)
         {
             // طبق پیشنهاد پروتکل: استفاده از ۹ رقم آخر شماره سریال 
-            string last9 = meterSerialNumber.Length > 9
-                ? meterSerialNumber.Substring(meterSerialNumber.Length - 9)
-                : meterSerialNumber;
+            //string last9 = meterSerialNumber.Length > 9
+            //    ? meterSerialNumber.Substring(meterSerialNumber.Length - 9)
+            //    : meterSerialNumber;
 
-            if (uint.TryParse(last9, out uint sid))
-            {
-                _activeSessions[meterSerialNumber] = sid;
-                return sid;
-            }
+            //if (uint.TryParse(last9, out uint sid))
+            //{
+            //    _activeSessions[meterSerialNumber] = sid;
+            //    return sid;
+            //}
 
             // مقدار پیش‌فرض در صورت خطا
             uint defaultSid = 0x6001F438;

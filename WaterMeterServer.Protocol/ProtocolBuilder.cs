@@ -1,4 +1,5 @@
 ﻿using System.Buffers.Binary;
+using System.Text;
 using WaterMeterServer.Domain.Constants;
 using WaterMeterServer.Domain.Interfaces;
 using WaterMeterServer.Domain.Models;
@@ -15,15 +16,12 @@ namespace WaterMeterServer.Protocol
         }
 
         // 1. پیاده‌سازی پاسخ هندشیک (بخش 6.2 سند)
-        public byte[] BuildHandshakeResponse(byte incomingMid, uint sessionId, string meterSerialNumber)
+        byte[] IProtocolBuilder.BuildHandshakeResponse(byte incomingMid, uint sessionId, Span<byte> composite)
         {
             // طول بدنه: 20 بایت سریال + 2 بایت نتیجه + 4 بایت SessionId = 26 بایت 
             byte[] business = new byte[26];
 
-            // کپی شماره سریال (20 بایت اول) 
-                        // تبدیل سریال به BCD در لایه‌های بالاتر انجام شده یا اینجا انجام دهید
-                        // در اینجا فرض بر این است که سریال قبلاً به فرمت مورد نیاز درآمده است
-
+            Array.Copy(composite.ToArray(), 0, business, 0, 20);
             int offset = 20;
             BinaryPrimitives.WriteUInt16BigEndian(business.AsSpan(offset), 0x0000); // Success 
             offset += 2;

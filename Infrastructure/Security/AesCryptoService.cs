@@ -6,7 +6,7 @@ namespace WaterMeterServer.Infrastructure.Security
 {
     public class AesCryptoService : ICryptoService
     {
-        private byte[] _key = null!;
+        private byte[] _key = Convert.FromHexString("676F6C64636172643030323530323533");
 
         public void SetPrivateKey(string hexKey) => _key = Convert.FromHexString(hexKey);
 

@@ -27,7 +27,7 @@ namespace WaterMeterServer.Protocol
             var startPos = reader.Position;
             if (reader.Remaining < 10) return false; // حداقل طول فریم 
 
-            reader.Advance(2); // عبور از Type و Version
+            reader.Advance(3); // عبور از Type و Version
             if (!reader.TryReadBigEndian(out short totalLen)) return false;
 
             if (buffer.Length < totalLen) return false; // فریم هنوز کامل نشده است

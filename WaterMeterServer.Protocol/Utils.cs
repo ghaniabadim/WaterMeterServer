@@ -18,5 +18,10 @@ namespace WaterMeterServer.Protocol
             seq.Slice(index, 2).CopyTo(tmp);
             return BinaryPrimitives.ReadUInt16BigEndian(tmp); 
         }
+
+        public static string ByteArrayToHexString(byte[] bytes)
+        {
+            return BitConverter.ToString(bytes).Replace("-", "");
+        }
     }
 }

@@ -6,7 +6,7 @@ namespace WaterMeterServer.Domain.Interfaces
     public interface IProtocolBuilder
     {
         // فریم پاسخ هندشیک (بخش ۶.۲ سند)
-        byte[] BuildHandshakeResponse(byte incomingMid, uint sessionId, string meterSerialNumber);
+        byte[] BuildHandshakeResponse(byte incomingMid, uint sessionId, Span<byte>composite);
 
         // فریم‌های تاییدیه یا ادامه (بخش ۷.۴ سند)
         byte[] BuildContinueFrameResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber);
