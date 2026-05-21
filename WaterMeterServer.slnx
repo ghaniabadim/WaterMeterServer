@@ -1,10 +1,10 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="Infrastructure/WaterMeterServer.Infrastructure.csproj" Id="8e6d6534-84f9-4f7a-8efe-f42f18283309" />
     <Project Path="WaterMeterServer.Application/WaterMeterServer.Application.csproj" Id="b15f25f6-26e5-4b76-bc15-c4d908dbbe09" />
     <Project Path="WaterMeterServer.Domain/WaterMeterServer.Domain.csproj" Id="f7858c20-21d6-469b-a59e-1d518ca418b4" />
+    <Project Path="WaterMeterServer.Infrastructure/WaterMeterServer.Infrastructure.csproj" />
     <Project Path="WaterMeterServer.Networking/WaterMeterServer.Networking.csproj" Id="dca41799-eecd-4a4c-93d4-710fe138bc7c" />
     <Project Path="WaterMeterServer.Protocol/WaterMeterServer.Protocol.csproj" Id="daa99809-efa4-4048-aa23-c802607d18c9" />
-    <Project Path="WorkerService/WorkerService.csproj" Id="bac18e4b-8c47-4ba0-a7f6-f8f2f322bb91" />
+    <Project Path="WaterMeterServer.WorkerService/WorkerService.csproj" />
   </Folder>
 </Solution>

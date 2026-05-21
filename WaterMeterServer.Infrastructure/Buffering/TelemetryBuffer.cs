@@ -10,7 +10,6 @@ namespace WaterMeterServer.Infrastructure.Buffering
 
         public TelemetryBuffer()
         {
-            // ظرفیت 10,000 رکورد برای مدیریت پیک‌های ترافیکی
             _channel = Channel.CreateBounded<TelemetryRecord>(new BoundedChannelOptions(10000)
             {
                 FullMode = BoundedChannelFullMode.Wait
@@ -18,6 +17,22 @@ namespace WaterMeterServer.Infrastructure.Buffering
         }
 
         public ValueTask PushRecordAsync(TelemetryRecord record) => _channel.Writer.WriteAsync(record);
+
+        public async Task<TelemetryRecord[]> PopRecordsAsync(int maxCount, CancellationToken stoppingToken)
+        {
+            var records = new List<TelemetryRecord>();
+
+            if (await _channel.Reader.WaitToReadAsync(stoppingToken))
+            {
+                while (records.Count < maxCount && _channel.Reader.TryRead(out var record))
+                {
+                    records.Add(record);
+                }
+            }
+
+            return records.ToArray();
+        }
+
         public ChannelReader<TelemetryRecord> Reader => _channel.Reader;
     }
 }

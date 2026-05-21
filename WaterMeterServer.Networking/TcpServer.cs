@@ -4,6 +4,7 @@ using System.IO.Pipelines;
 using Microsoft.Extensions.Logging;
 using WaterMeterServer.Protocol;
 using WaterMeterServer.Application.Dispatchers;
+using WaterMeterServer.Domain.Models;
 
 namespace WaterMeterServer.Networking
 {
@@ -31,7 +32,7 @@ namespace WaterMeterServer.Networking
             while (!ct.IsCancellationRequested)
             {
                 var socket = await listener.AcceptSocketAsync(ct);
-                _ = HandleConnectionAsync(socket); // پردازش موازی هر اتصال
+                _ = HandleConnectionAsync(socket);
             }
         }
 
@@ -78,12 +79,18 @@ namespace WaterMeterServer.Networking
                         if (frame != null)
                         {
                             // ارسال فریم به لایه اپلیکیشن و دریافت پاسخ احتمالی
-                            var response = await dispatcher.DispatchAsync(frame, context.ConnectionId);
+                            var response = await dispatcher.DispatchAsync(frame, context);
 
                             if (response != null)
                             {
                                 await context.Writer.WriteAsync(response);
                                 await context.Writer.FlushAsync();
+
+                                if (context.CurrentState == ConnectionContext.TransportState.EndConnection)
+                                {
+                                    _logger.LogInformation("Communication ended for {Mid}. Closing socket.", context.MeterId);
+                                    return;
+                                }
                             }
                         }
                     }

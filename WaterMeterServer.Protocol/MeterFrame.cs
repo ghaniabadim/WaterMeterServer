@@ -6,6 +6,9 @@
         public byte Version { get; }
         public ushort Length { get; }
         public byte Mid { get; }
+        public string? MeterId{ get; set; }
+        public ushort FrameNo { get; set; }
+        public uint SessionId { get; set; }
         public byte ControlCode { get; }
         public byte[] DecryptedData { get; } // داده‌های بیزنس پس از رمزگشایی
 

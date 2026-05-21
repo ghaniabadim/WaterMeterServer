@@ -22,9 +22,6 @@ namespace WaterMeterServer.Application.Workers
 
             while (!stoppingToken.IsCancellationRequested)
             {
-                // خواندن از کانال (Channel) طراحی شده در Infrastructure
-                // اگر ۱۰۰ تا جمع شد یا ۱۰ ثانیه گذشت، ذخیره در دیتابیس
-                // کد عملیاتی ذخیره دسته‌جمعی در اینجا قرار می‌گیرد...
             }
         }
     }

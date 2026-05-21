@@ -5,7 +5,6 @@ namespace WaterMeterServer.Infrastructure.Persistence
 {
     public class WaterMeterDbContext : DbContext
     {
-        // استفاده از DbContextOptions<T> برای تزریق وابستگی صحیح
         public WaterMeterDbContext(DbContextOptions<WaterMeterDbContext> options) : base(options)
         {
         }

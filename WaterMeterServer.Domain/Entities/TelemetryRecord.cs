@@ -2,16 +2,25 @@
 {
     public class TelemetryRecord
     {
-        public long Id { get; set; }
-        public long DeviceId { get; set; }
-        public Device Device { get; set; } = null!;
+        public int DeviceId { get; set; }
+        public DateTime RecordedAt { get; set; } // زمان ثبت در سرور
+        public DateTime TerminalTime { get; set; } // زمان ساعت داخلی کنتور
 
-        public DateTime RecordedAt { get; set; } // زمان واقعی کنتور (از شیء 70F2H)
-        public DateTime ServerReceivedAt { get; set; } = DateTime.UtcNow;
+        public double MainVoltage { get; set; }
+        public double BackupVoltage { get; set; }
+        public int SignalStrength { get; set; }
 
-        public decimal WaterUsage { get; set; } // حجم مصرفی (واحد 10L)
-        public decimal FlowRate { get; set; }   // دبی لحظه‌ای (واحد 10L/h)
-        public decimal BatteryVoltage { get; set; } // ولتاژ (واحد 0.001V)
-        public int SignalStrength { get; set; } // CSQ
+        public double PositiveCumulative { get; set; } // حجم تجمعی مثبت (m3)
+        public double ReverseCumulative { get; set; }  // حجم تجمعی معکوس (m3)
+        public double InstantaneousFlow { get; set; }  // دبی لحظه‌ای (m3/h)
+
+        public double RemainingAmount { get; set; }    // مقدار باقی‌مانده شارژ
+        public uint PumpRunningTime { get; set; }      // زمان کارکرد پمپ (ساعت)
+
+        public double RemainingAllowance { get; set; } // سهمیه باقی‌مانده دوره
+        public double AdditionalUsage { get; set; }    // مصرف اضافی دوره
+
+        public double MaxDailyTraffic { get; set; }    // حداکثر ترافیک ۲۴ ساعت گذشته
+        public double AvgDailyFlowRate { get; set; }   // میانگین دبی روزانه
     }
 }

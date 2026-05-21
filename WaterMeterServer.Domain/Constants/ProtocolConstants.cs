@@ -8,8 +8,17 @@
         public const byte TypeTransport = 0x04;
         public const byte TypeHandshake = 0x05;
 
+
+        public const ushort HandshakeSuccess = 0x0000;
+        public const ushort HandshakeFailure = 0x0001;
+
         // کدهای تابع طبق بخش 7.1.1 سند
-        public const byte FunCodePeriodicReporting = 0x01;
+        public const byte ControlReporting = 0x01;
+        public const byte ControlDistribution = 0x02;
+        public const byte ControlEndFrame = 0x05;
+
+        public const byte FunCodeEndCommunication = 0x02;
+        public const byte FunCodeResume = 0x03;
         public const byte FunCodeReadData = 0x04;
         public const byte FunCodeWriteData = 0x05;
         public const byte FunCodeReadRecords = 0x07;

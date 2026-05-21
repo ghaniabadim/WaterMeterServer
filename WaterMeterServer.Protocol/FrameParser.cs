@@ -55,6 +55,8 @@ namespace WaterMeterServer.Protocol
             var encryptedPayload = frameSeq.Slice(7, totalLen - 10);
             byte[] decryptedData = _cryptoService.Decrypt(encryptedPayload);
 
+            
+
             frame = new MeterFrame(
                 type: Utils.ReadByteAt(frameSeq, 1),
                 version: Utils.ReadByteAt(frameSeq, 2),
@@ -63,6 +65,8 @@ namespace WaterMeterServer.Protocol
                 control: Utils.ReadByteAt(frameSeq, 6),
                 decryptedData: decryptedData
             );
+
+            if(frame.Type == ProtocolConstants.TypeTransport) frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0,4));
 
             buffer = buffer.Slice(frameSeq.End);
             return true;

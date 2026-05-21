@@ -11,8 +11,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Infrastructure\WaterMeterServer.Infrastructure.csproj" />
     <ProjectReference Include="..\WaterMeterServer.Domain\WaterMeterServer.Domain.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Infrastructure\WaterMeterServer.Infrastructure.csproj" />
     <ProjectReference Include="..\WaterMeterServer.Protocol\WaterMeterServer.Protocol.csproj" />
   </ItemGroup>
 

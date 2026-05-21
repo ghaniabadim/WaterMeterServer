@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using WaterMeterServer.Domain.Models;
 
 namespace WaterMeterServer.Networking
 {
