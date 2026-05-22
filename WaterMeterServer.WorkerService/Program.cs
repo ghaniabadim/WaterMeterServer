@@ -13,13 +13,15 @@ namespace WorkerService
 {
     public class Program
     {
-        public static void Main(string[] args)
+        public static async Task Main(string[] args)
         {
             var builder = Host.CreateApplicationBuilder(args);
 
             // 1. تنظیمات دیتابیس (اتصال لوکال به پورت فوروارد شده SSH)
             builder.Services.AddDbContext<WaterMeterDbContext>(options =>
                 options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+           
 
             // 2. سرویس‌های یکتای لایه زیرساخت (Thread-Safe برای ۵۰۰۰ دستگاه)
             builder.Services.AddSingleton<ICryptoService, AesCryptoService>();
@@ -47,6 +49,23 @@ namespace WorkerService
             builder.Services.AddHostedService<TelemetryBatchProcessor>();
 
             var host = builder.Build();
+
+            using (var scope = host.Services.CreateScope())
+            {
+                var services = scope.ServiceProvider;
+                try
+                {
+                    var context = services.GetRequiredService<WaterMeterDbContext>();
+                    await context.Database.EnsureCreatedAsync();
+                    Console.WriteLine("Database and tables created successfully on VPS!");
+                }
+                catch (Exception ex)
+                {
+                    var logger = services.GetRequiredService<ILogger<Program>>();
+                    logger.LogError(ex, "An error occurred while creating the database.");
+                }
+            }
+
             host.Run();
         }
     }
