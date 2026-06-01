@@ -9,10 +9,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.8" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.8" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL.NodaTime" Version="10.0.1" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\WaterMeterServer.Domain\WaterMeterServer.Domain.csproj" />
+    <ProjectReference Include="..\WaterMeterServer.Protocol\WaterMeterServer.Protocol.csproj" />
   </ItemGroup>
 
 </Project>

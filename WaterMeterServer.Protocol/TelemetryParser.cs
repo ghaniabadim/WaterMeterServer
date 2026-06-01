@@ -5,15 +5,15 @@ namespace WaterMeterServer.Protocol
 {
     public static class TelemetryParser
     {
-        public static TelemetryRecord Parse70F2(ReadOnlySpan<byte> data, int deviceId)
+        public static TelemetryRecord Parse70F2(ReadOnlySpan<byte> data, long deviceId)
         {
             // کل طول طبق جدول شما: 49 بایت
             if (data.Length < 49) throw new ArgumentException("Data length must be at least 49 bytes.");
 
-            var record = new TelemetryRecord { DeviceId = deviceId, RecordedAt = DateTime.UtcNow };
+            var record = new TelemetryRecord { DeviceId = deviceId, RecordedAt = Utils.DateTimeToInstant( DateTime.UtcNow) };
 
             // 1. Terminal clock (6 Bytes - YYMMDDhhmmss BCD)
-            record.TerminalTime = Utils.ParseBcdDateTime(data.Slice(0, 6));
+            record.TerminalTime = Utils.DateTimeToInstant(Utils.ParseBcdDateTime(data.Slice(0, 6)));
 
             // 2. Main voltage (2 Bytes - Unit 0.001V) - Offset 6
             record.MainVoltage = BinaryPrimitives.ReadUInt16BigEndian(data.Slice(6, 2)) / 1000.0;

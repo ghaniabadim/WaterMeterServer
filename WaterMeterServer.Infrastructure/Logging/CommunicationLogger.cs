@@ -1,22 +1,24 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using WaterMeterServer.Domain.Entities;
+using WaterMeterServer.Domain.Interfaces;
 using WaterMeterServer.Infrastructure.Persistence;
 
 namespace WaterMeterServer.Infrastructure.Logging
 {
-    public class CommunicationLogger
+    public class CommunicationLogger: ICommunicationLogger
     {
-        private readonly IServiceProvider _serviceProvider;
+        private readonly IServiceScopeFactory _scopeFactory;
 
-        public CommunicationLogger(IServiceProvider serviceProvider)
+        public CommunicationLogger(IServiceScopeFactory scopeFactory)
         {
-            _serviceProvider = serviceProvider;
+            _scopeFactory = scopeFactory;
         }
+
 
         public async Task LogCommunicationAsync(string meterId, string connectionId, string direction, byte[] data)
         {
-            using var scope = _serviceProvider.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
+            using var scope = _scopeFactory.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
 
             var log = new CommunicationLog
             {
@@ -27,8 +29,8 @@ namespace WaterMeterServer.Infrastructure.Logging
                 Timestamp = DateTime.UtcNow
             };
 
-            db.CommunicationLogs.Add(log);
-            await db.SaveChangesAsync();
+            context.CommunicationLogs.Add(log);
+            await context.SaveChangesAsync();
         }
     }
 }

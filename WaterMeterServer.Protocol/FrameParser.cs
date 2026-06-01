@@ -12,9 +12,10 @@ namespace WaterMeterServer.Protocol
 
         public FrameParser(ICryptoService cryptoService) => _cryptoService = cryptoService;
 
-        public bool TryParse(ref ReadOnlySequence<byte> buffer, out MeterFrame? frame)
+        public bool TryParse(ref ReadOnlySequence<byte> buffer, out MeterFrame? frame, out byte[]? data)
         {
             frame = null;
+            data = null;
             var reader = new SequenceReader<byte>(buffer);
 
             // ۱. جستجوی HEAD (0x68) 
@@ -67,7 +68,8 @@ namespace WaterMeterServer.Protocol
             );
 
             if(frame.Type == ProtocolConstants.TypeTransport) frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0,4));
-
+            
+            data = frameSeq.ToArray();
             buffer = buffer.Slice(frameSeq.End);
             return true;
         }
