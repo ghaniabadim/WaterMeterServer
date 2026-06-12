@@ -42,7 +42,7 @@ namespace WaterMeterServer.Protocol
                 return false;
             }
 
-            // ۳. بررسی CRC16 مطابق Appendix C [cite: 131, 274]
+            // ۳. بررسی CRC16 مطابق Appendix C 
             ushort receivedCrc = Utils.ReadUInt16BigEndianAt(frameSeq, totalLen - 3);
             ushort computedCrc = Crc16.Calculate(frameSeq.Slice(5, totalLen - 8));
 
@@ -52,7 +52,7 @@ namespace WaterMeterServer.Protocol
                 return false;
             }
 
-            // ۴. دکریپت کردن بخش داده (Data Domain) [cite: 94, 95]
+            // ۴. دکریپت کردن بخش داده (Data Domain) 
             var encryptedPayload = frameSeq.Slice(7, totalLen - 10);
             byte[] decryptedData = _cryptoService.Decrypt(encryptedPayload);
 

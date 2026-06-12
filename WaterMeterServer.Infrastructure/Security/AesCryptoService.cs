@@ -14,7 +14,7 @@ namespace WaterMeterServer.Infrastructure.Security
         {
             using var aes = Aes.Create();
             aes.Key = _key;
-            // طبق سند: استفاده از ECB و PKCS7 [cite: 94, 97]
+            // طبق سند: استفاده از ECB و PKCS7 
             return aes.DecryptEcb(data.ToArray(), PaddingMode.PKCS7);
         }
 

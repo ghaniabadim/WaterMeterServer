@@ -1,8 +1,11 @@
 ﻿using System.Buffers.Binary;
+using System.Globalization;
 using System.Text;
 using WaterMeterServer.Domain.Constants;
+using WaterMeterServer.Domain.Entities;
 using WaterMeterServer.Domain.Interfaces;
 using WaterMeterServer.Domain.Models;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace WaterMeterServer.Protocol
 {
@@ -70,9 +73,16 @@ namespace WaterMeterServer.Protocol
 
             // درج زمان سیستم به صورت BCD برای هماهنگ‌سازی کنتور
             DateTime now = DateTime.Now;
-            business[offset++] = Utils.ByteToBcd(now.Year % 100);
-            business[offset++] = Utils.ByteToBcd(now.Month);
-            business[offset++] = Utils.ByteToBcd(now.Day);
+
+            PersianCalendar pc = new PersianCalendar();
+
+            int year = pc.GetYear(now);
+            int month = pc.GetMonth(now);
+            int day = pc.GetDayOfMonth(now);
+
+            business[offset++] = Utils.ByteToBcd(year%100);
+            business[offset++] = Utils.ByteToBcd(month);
+            business[offset++] = Utils.ByteToBcd(day);
             business[offset++] = Utils.ByteToBcd(now.Hour);
             business[offset++] = Utils.ByteToBcd(now.Minute);
             business[offset++] = Utils.ByteToBcd(now.Second);
@@ -81,38 +91,51 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x05, encrypted);
         }
 
-        // 4. ساخت درخواست خواندن اشیاء (بخش 7.5)
-        public byte[] BuildReadCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort commandId)
+        public byte[] BuildReadCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, List<DeviceCommandLog> commands)
         {
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId, frameNumber);
-
-            // طول داده تجاری بعد از شماره توالی درخواست: Number of objects (1 byte) + Object ID (2 bytes) = 3
-            WriteBigEndian(ms, (ushort)3);
-            ms.WriteByte(0x04); // Function Code
+            var dataLenPos = ms.Position;
+            ushort dataLenAfterReqSeq = (ushort)(1 + (commands.Count * 2));
+            WriteBigEndian(ms, dataLenAfterReqSeq);
+            ms.WriteByte(ProtocolConstants.FunCodeReadData); // Function Code
             WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
-            ms.WriteByte(1); // Number of objects requested
-            WriteBigEndian(ms, commandId); // Object ID
+            ms.WriteByte((byte)commands.Count); // Number of objects requested
+
+            foreach (var command in commands)
+            {
+                WriteBigEndian(ms, (ushort)command.CommandId); // Object ID
+            }
 
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
         // 2. Write Data Object (05H)
-        public byte[] BuildWriteCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort commandId, byte[] payload)
+        public byte[] BuildWriteCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, List<DeviceCommandLog> commands)
         {
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId, frameNumber);
 
-            // طول داده تجاری بعد از شماره توالی درخواست: Number of objects (1 byte) + Object ID (2 bytes) + Payload Length
-            ushort dataLenAfterReqSeq = (ushort)(1 + 2 + (payload?.Length ?? 0));
+            long pos = ms.Position;
+            ushort dataLenAfterReqSeq = (ushort)(1 + (commands.Count * 2));
             WriteBigEndian(ms, dataLenAfterReqSeq);
 
-            ms.WriteByte(0x05); // Function Code
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // Function Code
             WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
-            ms.WriteByte(1); // Number of objects
-            WriteBigEndian(ms, commandId); // Object ID
-            if (payload != null && payload.Length > 0) ms.Write(payload);
+            ms.WriteByte((byte)commands.Count); // Number of objects
 
+            foreach (var command in commands)
+            {
+                WriteBigEndian(ms, (ushort)command.CommandId); // Object ID
+                if (command.RequestPayload != null && command.RequestPayload.Length > 0)
+                {
+                    ms.Write(command.RequestPayload);
+                    dataLenAfterReqSeq = (ushort)(dataLenAfterReqSeq + command.RequestPayload.Length);
+                }
+            }
+
+            ms.Position = pos;
+            WriteBigEndian(ms, dataLenAfterReqSeq);
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 

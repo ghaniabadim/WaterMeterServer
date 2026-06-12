@@ -27,5 +27,6 @@ namespace WaterMeterServer.Domain.Models
 
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public Device Device { get; set; }
+        public ushort SequenceNumber { get; set; }
     }
 }

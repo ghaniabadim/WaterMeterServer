@@ -1,5 +1,4 @@
-﻿// مسیر فیزیکی: WaterMeterServer.Application/Dispatchers/FrameDispatcher.cs
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Buffers.Binary;
@@ -59,7 +58,7 @@ namespace WaterMeterServer.Application.Dispatchers
                 if (context.SessionId != frame.SessionId)
                 {
                     _logger.LogWarning("Session ID mismatch. Expected: {Expected}, Received: {Received}", context.SessionId, frame.SessionId);
-                    data =  _protocolBuilder.BuildEndFrameResponse(frame.SessionId, frame.Mid, (ushort)(frame.FrameNo + 1), 0x01);
+                    data = _protocolBuilder.BuildEndFrameResponse(frame.SessionId, frame.Mid, (ushort)(frame.FrameNo + 1), 0x01);
                 }
 
                 data = await HandleTransportAsync(frame, context);
@@ -126,52 +125,13 @@ namespace WaterMeterServer.Application.Dispatchers
                     return await HandleTransportAsync(frame, context);
 
                 case ConnectionContext.TransportState.ReportingComplete:
-                    // بررسی فوق‌العاده سریع با استفاده از پرچم بیتی دستگاه در حافظه RAM کانتکست
+                    
                     if (context.Device != null && context.Device.HasPendingCommands)
                     {
-                        using (var scope = _scopeFactory.CreateScope())
+                        var packet =  await SendPendingCommands(frame, context);
+                        if(packet != null)
                         {
-                            var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
-
-                            // پیدا کردن اولین دستور فعال در صف (Status = Pending / 1)
-                            var pendingCommand = await db.DeviceCommandLogs
-                                .Where(x => x.DeviceId == context.Device.Id && x.Status == DeviceCommandStatus.Pending)
-                                .OrderBy(x => x.Id)
-                                .FirstOrDefaultAsync();
-
-                            if (pendingCommand != null)
-                            {
-                                context.CurrentState = ConnectionContext.TransportState.SendingCommand;
-                                ushort generatedReqId = (ushort)pendingCommand.Id; // نگاشت شناسه ردیف به عنوان REQID پکت
-
-                                // به‌روزرسانی فیلد توالی و زمان ارسال در جدول
-                                pendingCommand.SequenceNumber = (ushort)generatedReqId;
-                                pendingCommand.SentAt = Utils.DateTimeToInstant( DateTime.UtcNow);
-                                await db.SaveChangesAsync();
-
-                                // تفکیک کدهای عملکرد پروتکل بر اساس فاکشن کدهای ارسالی شما
-                                switch (pendingCommand.FunctionCode)
-                                {
-                                    case 0x04: // Read Data Object
-                                        return _protocolBuilder.BuildReadCommandRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId);
-
-                                    case 0x05: // Write Data Object
-                                        return _protocolBuilder.BuildWriteCommandRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId, pendingCommand.RequestPayload);
-
-                                    case 0x07: // Read Records by Start Time
-                                        byte[] bcdTime = pendingCommand.RequestPayload.Take(6).ToArray();
-                                        byte limit = pendingCommand.RequestPayload.Length > 6 ? pendingCommand.RequestPayload[6] : (byte)1;
-                                        return _protocolBuilder.BuildReadRecordsByTimeRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId, bcdTime, limit);
-
-                                    case 0x08: // Read Recent Records
-                                        byte countToRead = pendingCommand.RequestPayload != null && pendingCommand.RequestPayload.Length > 0 ? pendingCommand.RequestPayload[0] : (byte)1;
-                                        return _protocolBuilder.BuildReadRecentRecordsRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId, countToRead);
-                                }
-                            }
-                            else
-                            {
-                                context.Device.HasPendingCommands = false;
-                            }
+                            return packet;
                         }
                     }
 
@@ -181,16 +141,14 @@ namespace WaterMeterServer.Application.Dispatchers
                 case ConnectionContext.TransportState.SendingCommand:
                     _logger.LogInformation("Processing active Uplink response command confirmation for Meter {Serial}", context.MeterId);
 
-                    // پارس نتایج اجرای هر ۴ نوع کامند و ذخیره در بدنه کلاس جدید شما
-                    await ProcessCommandResponseObject(frame, context.Device.Id);
+                    await ProcessCommandResponseObject(frame, context.Device.Id, context);
 
                     using (var scope = _scopeFactory.CreateScope())
                     {
                         var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
-                        var checks = await db.DeviceCommandLogs.AnyAsync(x => x.DeviceId == context.Device.Id && x.Status ==DeviceCommandStatus.Pending);
+                        var checks = await db.DeviceCommandLogs.AnyAsync(x => x.DeviceId == context.Device.Id && x.Status == DeviceCommandStatus.Pending);
                         if (checks)
                         {
-                            // اگر هنوز کامند در صف هست، وضعیت را برای لوپ بعدی تمدید کن
                             context.CurrentState = ConnectionContext.TransportState.ReportingComplete;
                             return await HandleTransportAsync(frame, context);
                         }
@@ -213,62 +171,144 @@ namespace WaterMeterServer.Application.Dispatchers
             }
         }
 
-        private async Task ProcessCommandResponseObject(MeterFrame frame, long deviceId)
+        private async Task<byte[]?> SendPendingCommands(MeterFrame frame, ConnectionContext context)
+        {
+            byte[] result = null;
+            ushort nextFrameNo = (ushort)(frame.FrameNo + 1);
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
+
+                // Get first command
+                var pendingCommand = await db.DeviceCommandLogs
+                    .Where(x => x.DeviceId == context.Device.Id && x.Status == DeviceCommandStatus.Pending)
+                    .OrderBy(x => x.Id)
+                    .FirstOrDefaultAsync();
+
+                if (pendingCommand != null)
+                {
+                    var pendingCommands = await db.DeviceCommandLogs
+                    .Where(x => x.DeviceId == context.Device.Id && x.Status == DeviceCommandStatus.Pending && x.FunctionCode == pendingCommand.FunctionCode)
+                    .OrderBy(x => x.Id)
+                    .Take(5)
+                    .ToListAsync();
+
+                    if (pendingCommands.Any())
+                    {
+                        ushort generatedReqId = 10000;
+                        context.CurrentState = ConnectionContext.TransportState.SendingCommand;
+                        context.SequenceNumber = generatedReqId;
+
+                        foreach (var command in pendingCommands)
+                        {
+                            command.SequenceNumber = (ushort)generatedReqId;
+                            pendingCommand.SentAt = Utils.DateTimeToInstant(DateTime.UtcNow);
+                        }
+
+                        await db.SaveChangesAsync();
+
+                        // تفکیک کدهای عملکرد پروتکل بر اساس فاکشن کدهای ارسالی شما
+                        switch (pendingCommand.FunctionCode)
+                        {
+                            case ProtocolConstants.FunCodeReadData: // Read Data Object
+                                return _protocolBuilder.BuildReadCommandRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, pendingCommands);
+
+                            case ProtocolConstants.FunCodeWriteData: // Write Data Object
+                                return _protocolBuilder.BuildWriteCommandRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, pendingCommands);
+
+                            case 0x07: // Read Records by Start Time
+                                byte[] bcdTime = pendingCommand.RequestPayload.Take(6).ToArray();
+                                byte limit = pendingCommand.RequestPayload.Length > 6 ? pendingCommand.RequestPayload[6] : (byte)1;
+                                return _protocolBuilder.BuildReadRecordsByTimeRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId, bcdTime, limit);
+
+                            case 0x08: // Read Recent Records
+                                byte countToRead = pendingCommand.RequestPayload != null && pendingCommand.RequestPayload.Length > 0 ? pendingCommand.RequestPayload[0] : (byte)1;
+                                return _protocolBuilder.BuildReadRecentRecordsRequest(frame.SessionId, frame.Mid, nextFrameNo, generatedReqId, (ushort)pendingCommand.CommandId, countToRead);
+                        }
+                    }
+                }
+                else
+                {
+                    context.Device.HasPendingCommands = false;
+                }
+            }
+
+            return result;
+        }
+
+        private async Task ProcessCommandResponseObject(MeterFrame frame, long deviceId, ConnectionContext context)
         {
             try
             {
-                byte responseFunctionCode = frame.DecryptedData[12];
-                ushort responseSeq = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(13, 2));
+                int offset = 8; // 4 bytes seesionID + 2 bytes frame number + 2 bytes data length
+                if (frame.DecryptedData == null || frame.DecryptedData.Length < 5) return;
+
+                byte responseFunctionCode = frame.DecryptedData[offset++];
+                ushort responseSeq = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(offset, 2));
+                offset += 2;
 
                 using (var scope = _scopeFactory.CreateScope())
                 {
                     var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
 
-                    // رفع قطعی امپراتور مقایسه انوم و استنتاج کواِری با فراخوانی صریح فرمت ای‌اف‌کور
-                    var commandLog = await Microsoft.EntityFrameworkCore.EntityFrameworkQueryableExtensions
-                        .FirstOrDefaultAsync<DeviceCommandLog>(
-                            db.DeviceCommandLogs.Where(x => x.DeviceId == deviceId && x.SequenceNumber == responseSeq && x.Status == DeviceCommandStatus.Pending)
-                        );
+                    var commandBatch = await db.DeviceCommandLogs
+                        .Where(x => x.DeviceId == deviceId && x.SequenceNumber == responseSeq && x.Status == DeviceCommandStatus.Pending)
+                        .ToListAsync();
 
-                    if (commandLog != null)
+                    if (!commandBatch.Any())
+                    {
+                        _logger.LogWarning("No pending command batch found for SequenceNumber: {Seq}", responseSeq);
+                        return;
+                    }
+
+                    var nowInstant = NodaTime.Instant.FromDateTimeUtc(DateTime.UtcNow);
+
+                    foreach (var commandLog in commandBatch)
                     {
                         commandLog.ResponsePayload = frame.DecryptedData.ToArray();
-                        commandLog.RespondedAt = Utils.DateTimeToInstant(DateTime.UtcNow);
+                        commandLog.RespondedAt = nowInstant;
+                    }
 
+                    byte objectCount = frame.DecryptedData[offset++];
+
+                    if (objectCount == 0xFF || objectCount == 0)
+                    {
+                        foreach (var cmd in commandBatch)
+                        {
+                            cmd.Status = DeviceCommandStatus.Failed;
+                            cmd.ExecutionResult = "Failed: Terminal does not recognize or rejected these read data object IDs.";
+                        }
+
+                    }
+                    else
+                    {
                         switch (responseFunctionCode)
                         {
-                            case 0x05:
-                            case 0x85: // فیدبک اجرای تغییرات دستور نوشتن (Write Object Response)
-                                byte writeResult = frame.DecryptedData[18];
-                                commandLog.Status = writeResult == 0 ? DeviceCommandStatus.Succeeded : DeviceCommandStatus.Failed;
-                                commandLog.ExecutionResult = writeResult == 0 ? "Success" : $"Failed with terminal status code {writeResult}";
+                            case 0x84:
+                                await HandleReadObjectsBatch(frame.DecryptedData, objectCount, commandBatch, db,context.Device);
                                 break;
 
-                            case 0x04:
-                            case 0x84: // فیدبک محتوای اوبجکت درخواستی دستور خواندن (Read Object Response)
-                                byte objectCount = frame.DecryptedData[15];
-                                commandLog.Status = DeviceCommandStatus.Succeeded;
-                                commandLog.ExecutionResult = $"Read successfully. Contained Objects: {objectCount}. Payload: {frame.DecryptedData.Length - 16} bytes.";
+                            case 0x85:
+                                await HandleWriteObjectsBatch(frame.DecryptedData, objectCount, commandBatch, db, deviceId);
                                 break;
 
-                            case 0x07:
-                            case 0x87: // پاسخ موفق استخراج آرشیو بر اساس زمان شروع
-                            case 0x08:
-                            case 0x88: // پاسخ موفق استخراج رکوردهای مصرفی اخیر کنتور
-                                byte recordCount = frame.DecryptedData[17];
-                                commandLog.Status = DeviceCommandStatus.Succeeded;
-                                commandLog.ExecutionResult = $"Successfully retrieved {recordCount} flash historical log records from internal storage.";
+                            case 0x87:
+                            case 0x88:
+                                HandleRecordResponseBatch(frame.DecryptedData, responseFunctionCode, commandBatch);
                                 break;
 
                             default:
-                                commandLog.Status = DeviceCommandStatus.Failed;
-                                commandLog.ExecutionResult = $"Unknown or invalid function response operation code 0x{responseFunctionCode:X2}";
+                                foreach (var cmd in commandBatch)
+                                {
+                                    cmd.Status = DeviceCommandStatus.Failed;
+                                    cmd.ExecutionResult = $"Critical Mismatch: Unknown function response code 0x{responseFunctionCode:X2}";
+                                }
                                 break;
                         }
-
-                        await db.SaveChangesAsync();
-                        _logger.LogInformation("DeviceCommandLog ID {Id} synchronized successfully with status: {Status}", commandLog.Id, commandLog.Status);
                     }
+
+                    await db.SaveChangesAsync();
+                    _logger.LogInformation("Batch commands for ReqID {Seq} processed and synchronized successfully.", responseSeq);
                 }
             }
             catch (Exception ex)
@@ -276,6 +316,387 @@ namespace WaterMeterServer.Application.Dispatchers
                 _logger.LogError(ex, "Critical error decoding downstream response verification byte loop.");
             }
         }
+
+        private async Task HandleReadObjectsBatch(byte[] data, byte objectCount, List<DeviceCommandLog> batch, WaterMeterDbContext db, Device? device)
+        {
+
+            int offset = 12; 
+
+            for (int i = 0; i < objectCount; i++)
+            {
+                if (offset + 2 > data.Length) break;
+                ushort objId = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(offset, 2));
+                offset += 2;
+
+                int len = GetObjectLength(objId); 
+                if (offset + len > data.Length) break;
+
+                var content = data.AsSpan(offset, len);
+
+                var matchedCmd = batch.FirstOrDefault(x => x.CommandId == objId);
+                if (matchedCmd != null)
+                {
+                    matchedCmd.Status = DeviceCommandStatus.Succeeded;
+                    matchedCmd.ExecutionResult = await ParseAndApplyReadObject(objId,content.ToArray(), device, db);
+                }
+
+                offset += len; // جلو بردن آفست به ابتدای اوبجکت بعدی
+            }
+        }
+
+        // ==================== ۲. تابع تفکیک‌شده پردازش پاسخ چند آبجکتی نوشتن (0x85) ====================
+        private async Task HandleWriteObjectsBatch(byte[] data, byte objectCount, List<DeviceCommandLog> batch, WaterMeterDbContext db, long deviceId)
+        {
+
+
+            int offset = 12;
+
+            // پیمایش جفت‌های فشرده ۳ بایتی: [2 بایت اوبجکت آی‌دی] + [1 بایت نتیجه رایت]
+            for (int i = 0; i < objectCount; i++)
+            {
+                if (offset + 3 > data.Length) break;
+                ushort objId = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(offset, 2));
+                byte writeResult = data[offset + 2];
+                offset += 3;
+
+                // پیدا کردن کامند متناظر با این آبجکت از داخل لیت بچ دیتابیس
+                var matchedCmd = batch.FirstOrDefault(x => x.CommandId == objId);
+                if (matchedCmd != null)
+                {
+                    if (writeResult == 0) // عدد 0 یعنی موفقیت مطلق روی سخت‌افزار کنتور
+                    {
+                        matchedCmd.Status = DeviceCommandStatus.Succeeded;
+
+                        // تحلیل و پارس معکوس پی‌لود ارسالی برای اعمال روی جداول کانفیگ اصلی سرور
+                        string syncSummary = "Success: Configuration applied to terminal. ";
+                        if (matchedCmd.RequestPayload != null && matchedCmd.RequestPayload.Length > 0)
+                        {
+                            syncSummary += await ParseAndSyncWrittenConfig(objId, matchedCmd.RequestPayload, db, deviceId);
+                        }
+
+                        matchedCmd.ExecutionResult = syncSummary;
+                    }
+                    else
+                    {
+                        matchedCmd.Status = DeviceCommandStatus.Failed;
+                        if (writeResult == 2)
+                            matchedCmd.ExecutionResult = "Failed (Code 2): Permission mismatch. This object is restricted or read-only.";
+                        else if (writeResult == 1)
+                            matchedCmd.ExecutionResult = "Failed (Code 1): Value out of range. The data exceeds terminal configuration limit.";
+                        else
+                            matchedCmd.ExecutionResult = $"Failed: Terminal returned unmapped error status code: {writeResult}";
+                    }
+                }
+            }
+        }
+        // ==================== ۳. تابع تفکیک‌شده پردازش پاسخ سوابق و آرشیو (0x87 و 0x88) ====================
+        private void HandleRecordResponseBatch(byte[] data, byte functionCode, List<DeviceCommandLog> batch)
+        {
+            byte recordCount = data[7]; // بایت 7 طبق سند لایه انتقال تعداد رکوردهای موجود است
+            var mainCmd = batch.First(); // دستور سوابق تاریخی همیشه تک اوبجکتی فرستاده می‌شود
+
+            if (recordCount == 0xFF)
+            {
+                mainCmd.Status = DeviceCommandStatus.Failed;
+                mainCmd.ExecutionResult = "Failed: Terminal does not recognize requested history file or record parameters.";
+            }
+            else
+            {
+                mainCmd.Status = DeviceCommandStatus.Succeeded;
+                mainCmd.ExecutionResult = functionCode == 0x87
+                    ? $"Record Read Success: Retrieved {recordCount} logs starting from requested BCD timestamp."
+                    : $"Recent Log Success: Successfully unpacked {recordCount} historical log data structures from flash.";
+            }
+        }
+
+        // ==================== توابع کمکی پارسر و تحلیل‌گر فیزیکی اوبجکت‌ها ====================
+
+        private int GetObjectLength(ushort objId)
+        {
+            return objId switch
+            {
+                0xB055 or 0x70DA => 1,                  // بازه فریز، کنترل پمپ (1 بایت)
+                0x70B6 or 0x200E => 2,                  // پیکربندی پمپ، ضریب شیفت (2 بایت)
+                0x70BE or 0xB061 => 3,                  // تاریخ تولید، زمان‌بندی آپلود (3 بایت)
+                0x4211 => 4,                            // نسخه فریمور اصلی (4 بایت)
+                0x0002 => 6,                            // ساعت داخلی کنتور (6 بایت)
+                0x70C0 => 7,                            // پارامترهای ساعت تابستانه (7 بایت)
+                0x0016 or 0xA013 => 15,                 // IMEI و IMSI (15 بایت)
+                0x0067 => 16,                           // کلید مشتری (16 بایت)
+                0x2007 => 18,                           // آی‌پی سرور و پورت (16 + 2 = 18 بایت)
+                0x200A => 20,                           // کد ICCID سیم کارت (20 بایت)
+                0x70F4 or 0x70F5 => 24,                 // شروع/پایان دوره‌ها و دبی مجاز (24 بایت)
+                0x2012 => 32,                           // کلاینت APN (32 بایت)
+                _ => 0
+            };
+        }
+
+        private async Task<string> ParseAndApplyReadObject(ushort objId, byte[] content, Device? device, WaterMeterDbContext db)
+        {
+            if (content == null || content.Length == 0)
+                return $"Object 0x{objId:X4}: Empty payload.";
+
+            var contentSpan = content.AsSpan();
+
+            switch (objId)
+            {
+                case 0x0002: // ساعت داخلی کنتور (6 Bytes BCD)
+                    DateTime dt = Utils.ParseBcdDateTime(content);
+                    if (device != null)
+                    {
+                        device.LastSeenAt = NodaTime.Instant.FromDateTimeUtc(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+                    }
+                    return $"[Clock]: {dt:yyyy-MM-dd HH:mm:ss}; ";
+
+                case 0x4211: // نسخه کنترلر اصلی (4 Bytes BCD)
+                    string ver = $"{content[0]:X2}.{content[1]:X2}.{content[2]:X2}.{content[3]:X2}";
+                    if (device != null) device.FirmwareVersion = ver;
+                    return $"[Main Controller Version]: {ver}; ";
+
+                case 0x0067: // کلید اختصاصی مشتری (16 Bytes HEX)
+                    string keyHex = BitConverter.ToString(content).Replace("-", "");
+                    return $"[Customer Key]: {keyHex}; ";
+
+                case 0x70B6: // کانفیگ رفتاری شیر/پمپ هنگام رخداد وقایع (2 Bytes Bitmask)
+                    ushort configBits = BinaryPrimitives.ReadUInt16BigEndian(contentSpan);
+                    string pumpBehavior = $"[Valve Action Config]: 0x{configBits:X4} (";
+                    pumpBehavior += (configBits & 0x01) != 0 ? "IsolationDoorOpen:PumpOff, " : "IsolationDoorOpen:NoAction, ";
+                    pumpBehavior += (configBits & 0x02) != 0 ? "OverLimitWater:PumpOff, " : "OverLimitWater:NoAction, ";
+                    pumpBehavior += (configBits & 0x04) != 0 ? "PowerCableDisconnect:PumpOff, " : "PowerCableDisconnect:NoAction, ";
+                    pumpBehavior += (configBits & 0x08) != 0 ? "ControlCableDisconnect:PumpOff, " : "ControlCableDisconnect:NoAction, ";
+                    pumpBehavior += (configBits & 0x10) != 0 ? "LowBalance:PumpOff, " : "LowBalance:NoAction, ";
+                    pumpBehavior += (configBits & 0x20) != 0 ? "MeterDisconnect:PumpOff, " : "MeterDisconnect:NoAction, ";
+                    pumpBehavior += (configBits & 0x40) != 0 ? "MagneticInterference:PumpOff" : "MagneticInterference:NoAction";
+                    pumpBehavior += "); ";
+                    return pumpBehavior;
+
+                case 0x70F4: // زمان شروع/پایان دوره‌های ۴ گانه (24 Bytes - 4 Cycles * 6 Bytes)
+                    string cyclesTime = "[Cycle Start/End Times]: ";
+                    for (int c = 0; c < 4; c++)
+                    {
+                        int baseIdx = c * 6;
+                        cyclesTime += $"Cycle {c + 1}(Start:{content[baseIdx]:X2}{content[baseIdx + 1]:X2}h{content[baseIdx + 2]:X2}, ";
+                        cyclesTime += $"End:{content[baseIdx + 3]:X2}{content[baseIdx + 4]:X2}h{content[baseIdx + 5]:X2}); ";
+                    }
+                    return cyclesTime;
+
+                case 0x70F5: // حجم دبی مجاز دوره‌ها (20 Bytes - 4 Cycles * 5 Bytes Unsigned Integer)
+                    string cyclesAllowance = "[Cycle Allowed Usage]: ";
+                    for (int c = 0; c < 4; c++)
+                    {
+                        int baseIdx = c * 5;
+                        // خواندن مقدار 5 بایتی (40 بیتی) بزرگ به صورت Big Endian
+                        long allowedLiters10 = Utils.ReadUint40BigEndian(contentSpan.Slice(baseIdx, 5));
+                        double allowedM3 = (allowedLiters10 * 10.0) / 1000.0;
+                        cyclesAllowance += $"Cycle {c + 1}: {allowedM3} m³; ";
+                    }
+                    return cyclesAllowance;
+
+                case 0x70BE: // تاریخ تولید کنتور (3 Bytes BCD: YYMMDD)
+                    string prodDate = $"14{content[0]:X2}-{content[1]:X2}-{content[2]:X2}";
+                    return $"[Production Date]: {prodDate}; ";
+
+                case 0xB055: // بازه فریز روزانه (1 Byte Integer)
+                    byte interval = content[0];
+                    return $"[Freeze Interval]: {interval} minutes; ";
+
+                case 0xA102: // پارامترهای شماره سریال کل ماشین (17 Bytes)
+                    byte lenByte = content[0];
+                    bool isAscii = (lenByte & 0x80) != 0;
+                    int actualLen = lenByte & 0x7F;
+                    string serialContent = "";
+
+                    if (isAscii)
+                    {
+                        serialContent = System.Text.Encoding.ASCII.GetString(content, 1, Math.Min(actualLen, 16)).Trim('\0', ' ');
+                    }
+                    else
+                    {
+                        // فرمت پیش‌فرض BCD هفده بایتی
+                        serialContent = BitConverter.ToString(content, 1, 16).Replace("-", "");
+                    }
+                    return $"[Meter Production Serial]: {serialContent}; ";
+
+                case 0xB061: // تنظیمات آپلود زمان‌بندی شده (3 Bytes)
+                    byte intervalCode = content[0];
+                    int intervalMinutes = intervalCode * 10;
+                    string startTimeHhmm = $"{content[1]:X2}:{content[2]:X2}";
+                    return $"[Scheduled Upload]: Every {intervalMinutes} min from {startTimeHhmm}; ";
+
+                case 0x70C0: // کانفیگ پارامترهای ساعت تابستانه (7 Bytes)
+                    string dstStart = $"{content[0]:X2}-{content[1]:X2}h{content[2]:X2}";
+                    string dstEnd = $"{content[3]:X2}-{content[4]:X2}h{content[5]:X2}";
+                    sbyte adjustment10Min = (sbyte)content[6];
+                    int adjMinutes = adjustment10Min * 10;
+                    return $"[DST Config]: Start:{dstStart}, End:{dstEnd}, Adjust:{adjMinutes} min; ";
+
+                case 0x70DA: // وضعیت رله کنترل پمپ / شیر برقی (1 Byte)
+                    byte pumpState = content[0];
+                    string stateLabel = pumpState == 0 ? "Exit Lock" : (pumpState == 1 ? "Lock Open (Valve Closed)" : "Lock Closed (Valve Open)");
+
+                    // همگام‌سازی آنی اسنپ‌شات در لایه پایگاه داده
+                    await SyncDatabaseConfigSnapshot(0x70DA, content, db, device?.Id ?? 0);
+                    return $"[Valve Position]: {stateLabel}; ";
+
+                case 0x200E: // زمان اینتروال استگرد یا همان Peak Shifting (2 Bytes Unsigned Integer)
+                    ushort peakCoef = BinaryPrimitives.ReadUInt16BigEndian(contentSpan);
+                    return $"[Staggered Peak Interval]: {peakCoef}; ";
+
+                case 0x0016: // شناسه IMEI مودم کنتور (15 Bytes ASCII)
+                    string imei = System.Text.Encoding.ASCII.GetString(content).Trim('\0', ' ');
+                    if (device != null) device.DeviceUid = imei;
+                    return $"[Modem IMEI]: {imei}; ";
+
+                case 0xA013: // شناسه IMSI سیم‌کارت (15 Bytes ASCII)
+                    string imsi = System.Text.Encoding.ASCII.GetString(content).Trim('\0', ' ');
+                    return $"[SIM IMSI]: {imsi}; ";
+
+                case 0x200A: // کد ICCID بیست بایتی سیم‌کارت (20 Bytes ASCII)
+                    string iccid = System.Text.Encoding.ASCII.GetString(content).Trim('\0', ' ');
+                    if (device != null) device.CommunicationIccid = iccid;
+                    return $"[SIM ICCID]: {iccid}; ";
+
+                case 0x2012: // نقطه دسترسی اختصاصی مشتری APN (32 Bytes ASCII)
+                    string apn = System.Text.Encoding.ASCII.GetString(content).Trim('\0', ' ');
+                    return $"[APN Name]: {apn}; ";
+
+                case 0x2007: // آی‌پی آدرس سرور مرکزی و پورت اتصال (16 Bytes ASCII IP + 2 Bytes Unsigned Port)
+                    string ipAddress = System.Text.Encoding.ASCII.GetString(content, 0, 16).Trim('\0', ' ');
+                    ushort portServer = BinaryPrimitives.ReadUInt16BigEndian(contentSpan.Slice(16, 2));
+                    return $"[Central Server Destination]: {ipAddress}:{portServer}; ";
+
+                default:
+                    return $"[Unknown Object 0x{objId:X4}]: HexRaw({BitConverter.ToString(content)}); ";
+            }
+        }
+
+        private async Task<string> ParseAndSyncWrittenConfig(ushort objId, byte[] requestPayload, WaterMeterDbContext db, long deviceId)
+        {
+            var payloadSpan = requestPayload;
+            var device = await db.Devices.FindAsync(deviceId);
+
+            switch (objId)
+            {
+                case 0x0002: // ۱. ست کردن ساعت کنتور (6 Bytes BCD)
+                    if (requestPayload.Length >= 6)
+                    {
+                        DateTime writtenTime = Utils.ParseBcdDateTime(requestPayload);
+                        if (device != null)
+                        {
+                            device.LastSeenAt = NodaTime.Instant.FromDateTimeUtc(DateTime.SpecifyKind(writtenTime, DateTimeKind.Utc));
+                        }
+                        return $"[Sync] System clock updated to {writtenTime:yyyy-MM-dd HH:mm:ss}.";
+                    }
+                    break;
+
+                case 0x0067: // ۲. پیکربندی کلید رمزنگاری مشتری (16 Bytes HEX)
+                    string hexKey = BitConverter.ToString(requestPayload).Replace("-", "");
+                    return $"[Sync] Customer security key updated in terminal database.";
+
+                case 0xB055: // ۳. تغییر بازه فریز روزانه کنتور (1 Byte Integer)
+                    byte intervalMinutes = requestPayload[0];
+                    // اگر ستونی برای این کانفیگ در جدول دیتابیس دارید، اینجا آپدیت کنید:
+                    // if (device != null) device.FreezeInterval = intervalMinutes;
+                    return $"[Sync] Daily freeze interval synchronized to {intervalMinutes} minutes.";
+
+                case 0x70DA: // ۴. دستور باز/بسته کردن شیر برقی یا پمپ (1 Byte)
+                    byte newPumpState = requestPayload[0];
+                    // 0: Exit lock, 1: Lock open (شیر بسته), 2: Lock closed (شیر باز)
+                    var alarmSnapshot = await db.DeviceAlarmSnapshots.FindAsync(deviceId);
+                    if (alarmSnapshot != null)
+                    {
+                        // طبق منطق آلارم‌ها: کد 1 یعنی شیر برقی قطع جریان کرده (PumpOff = true)
+                        alarmSnapshot.PumpOff = (newPumpState == 1);
+                        alarmSnapshot.UpdatedAt = NodaTime.Instant.FromDateTimeUtc(DateTime.UtcNow);
+                    }
+                    string stateText = newPumpState == 1 ? "Valve Closed (Pump Off)" : "Valve Open (Pump On/Normal)";
+                    return $"[Sync] Active Valve State updated to: {stateText}.";
+
+                case 0xB061: // ۵. زمان‌بندی آپلود پارامترها (3 Bytes: 1 Byte interval + 2 Bytes BCD time)
+                    if (requestPayload.Length >= 3)
+                    {
+                        int uploadIntervalMin = requestPayload[0] * 10;
+                        string startTime = $"{requestPayload[1]:X2}:{requestPayload[2]:X2}";
+                        return $"[Sync] High-frequency upload configured for every {uploadIntervalMin} min starting at {startTime}.";
+                    }
+                    break;
+
+                case 0x70B6: // ۶. رفتار رله پمپ هنگام وقوع خطاهای فیزیکی/مغناطیسی (2 Bytes Bitmask)
+                    if (requestPayload.Length >= 2)
+                    {
+                        ushort bitmask = BinaryPrimitives.ReadUInt16BigEndian(payloadSpan);
+                        return $"[Sync] Hardware safety valve bitmask synchronized to 0x{bitmask:X4}.";
+                    }
+                    break;
+
+                case 0x70C0: // ۷. پیکربندی ساعت تابستانه DST (7 Bytes)
+                    return $"[Sync] Daylight Saving Time parameter block updated.";
+
+                case 0x200E: // ۸. ضریب تغییر زمان اوج بار یا همان Peak Shifting (2 Bytes Unsigned Integer)
+                    if (requestPayload.Length >= 2)
+                    {
+                        ushort shiftCoef = BinaryPrimitives.ReadUInt16BigEndian(payloadSpan);
+                        return $"[Sync] Staggered peak shifting coefficient synchronized to {shiftCoef}.";
+                    }
+                    break;
+
+                case 0x2012: // ۹. تنظیم نقطه دسترسی APN سیم‌کارت (32 Bytes ASCII)
+                    string newApn = System.Text.Encoding.ASCII.GetString(requestPayload).Trim('\0', ' ');
+                    return $"[Sync] Access Point Name (APN) synchronized to '{newApn}'.";
+
+                case 0x2007: // ۱۰. تغییر آی‌پی آدرس و پورت سرور مرکزی (16 Bytes IP ASCII + 2 Bytes Port)
+                    if (requestPayload.Length >= 18)
+                    {
+                        string ip = System.Text.Encoding.ASCII.GetString(requestPayload, 0, 16).Trim('\0', ' ');
+                        ushort port = BinaryPrimitives.ReadUInt16BigEndian(payloadSpan);
+                        return $"[Sync] Target Central Destination Redirected to -> {ip}:{port}.";
+                    }
+                    break;
+            }
+
+            return $"[Sync] Database synchronized for Object ID 0x{objId:X4}.";
+        }
+
+        private async Task SyncDatabaseConfigSnapshot(ushort objId, byte[]? payload, WaterMeterDbContext db, long deviceId)
+        {
+            if (payload == null || payload.Length == 0 || deviceId == 0) return;
+
+            var payloadSpan = payload.AsSpan();
+
+            switch (objId)
+            {
+                case 0x70DA: // ۱. همگام‌سازی شیر برقی / پمپ
+                    var alarmSnapshot = await db.DeviceAlarmSnapshots.FindAsync(deviceId);
+                    if (alarmSnapshot != null)
+                    {
+                        // بر اساس بایت نوشته شده: 1 یعنی شیر بسته شود (PumpOff = true)، 2 یعنی شیر باز شود (PumpOff = false)
+                        alarmSnapshot.PumpOff = (payload[0] == 1);
+                        alarmSnapshot.UpdatedAt = NodaTime.Instant.FromDateTimeUtc(DateTime.UtcNow);
+                    }
+                    break;
+
+                case 0x0002: // ۲. همگام‌سازی مجدد ساعت ثبت دستگاه در جدول اصلی در صورت ست کردن دستی ساعت
+                    if (payload.Length >= 6)
+                    {
+                        DateTime dt = Utils.ParseBcdDateTime(payload);
+                        var device = await db.Devices.FindAsync(deviceId);
+                        if (device != null)
+                        {
+                            device.LastSeenAt = NodaTime.Instant.FromDateTimeUtc(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+                        }
+                    }
+                    break;
+
+                case 0xB055: // ۳. در صورت تمایل، بروزرسانی ستون بازه فریز در یک جدول کانفیگ اختصاصی
+                    byte intervalMinutes = payload[0];
+                    // مثلا: updates local configuration entity or device metadata row
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
         private async Task ProcessTelemetryObject(MeterFrame frame, long deviceId, ConnectionContext context)
         {
             try

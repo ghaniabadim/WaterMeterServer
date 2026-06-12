@@ -42,7 +42,7 @@ namespace WorkerService
             // 5. ایجاد مستقیم سرور سوکت روی پورت ۸۰۸۰
             builder.Services.AddSingleton(sp =>
                 new TcpServer(
-                    8080,
+                    502,
                     sp.GetRequiredService<FrameParser>(),
                     sp.GetRequiredService<FrameDispatcher>(),
                     sp.GetRequiredService<ILogger<TcpServer>>(),
