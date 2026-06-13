@@ -1,8 +1,11 @@
 ﻿using System.Buffers.Binary;
+using System.Globalization;
 using System.Text;
 using WaterMeterServer.Domain.Constants;
+using WaterMeterServer.Domain.Entities;
 using WaterMeterServer.Domain.Interfaces;
 using WaterMeterServer.Domain.Models;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace WaterMeterServer.Protocol
 {
@@ -70,9 +73,16 @@ namespace WaterMeterServer.Protocol
 
             // درج زمان سیستم به صورت BCD برای هماهنگ‌سازی کنتور
             DateTime now = DateTime.Now;
-            business[offset++] = Utils.ByteToBcd(now.Year % 100);
-            business[offset++] = Utils.ByteToBcd(now.Month);
-            business[offset++] = Utils.ByteToBcd(now.Day);
+
+            PersianCalendar pc = new PersianCalendar();
+
+            int year = pc.GetYear(now);
+            int month = pc.GetMonth(now);
+            int day = pc.GetDayOfMonth(now);
+
+            business[offset++] = Utils.ByteToBcd(year%100);
+            business[offset++] = Utils.ByteToBcd(month);
+            business[offset++] = Utils.ByteToBcd(day);
             business[offset++] = Utils.ByteToBcd(now.Hour);
             business[offset++] = Utils.ByteToBcd(now.Minute);
             business[offset++] = Utils.ByteToBcd(now.Second);
@@ -81,43 +91,88 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x05, encrypted);
         }
 
-        // 4. ساخت درخواست خواندن اشیاء (بخش 7.5)
-        public byte[] BuildReadCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, IReadOnlyList<MeterCommand> commands)
+        public byte[] BuildReadCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, List<DeviceCommandLog> commands)
         {
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId, frameNumber);
+            var dataLenPos = ms.Position;
+            ushort dataLenAfterReqSeq = (ushort)(1 + (commands.Count * 2));
+            WriteBigEndian(ms, dataLenAfterReqSeq);
+            ms.WriteByte(ProtocolConstants.FunCodeReadData); // Function Code
+            WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
+            ms.WriteByte((byte)commands.Count); // Number of objects requested
 
-            ushort dataLen = (ushort)(1 + (commands.Count * 2) + 3); // DataLen logic
-            WriteBigEndian(ms, (ushort)(1 + (commands.Count * 2))); // Length of data after ReqSeq
-            ms.WriteByte(0x04); // Function: Read 
-            WriteBigEndian(ms, requestNumber);
-            ms.WriteByte((byte)commands.Count);
-
-            foreach (var cmd in commands)
-                WriteBigEndian(ms, (ushort)cmd.CommandId);
+            foreach (var command in commands)
+            {
+                WriteBigEndian(ms, (ushort)command.CommandId); // Object ID
+            }
 
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
-        // 5. ساخت درخواست نوشتن اشیاء (بخش 7.6)
-        public byte[] BuildWriteCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, IReadOnlyList<MeterCommand> commands)
+        // 2. Write Data Object (05H)
+        public byte[] BuildWriteCommandRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, List<DeviceCommandLog> commands)
         {
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId, frameNumber);
 
-            int payloadLen = 1; // ObjCount
-            foreach (var c in commands) payloadLen += 2 + (c.Payload?.Length ?? 0);
+            long pos = ms.Position;
+            ushort dataLenAfterReqSeq = (ushort)(1 + (commands.Count * 2));
+            WriteBigEndian(ms, dataLenAfterReqSeq);
 
-            WriteBigEndian(ms, (ushort)payloadLen);
-            ms.WriteByte(0x05); // Function: Write 
-            WriteBigEndian(ms, requestNumber);
-            ms.WriteByte((byte)commands.Count);
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // Function Code
+            WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
+            ms.WriteByte((byte)commands.Count); // Number of objects
 
-            foreach (var c in commands)
+            foreach (var command in commands)
             {
-                WriteBigEndian(ms, (ushort)c.CommandId);
-                if (c.Payload != null) ms.Write(c.Payload);
+                WriteBigEndian(ms, (ushort)command.CommandId); // Object ID
+                if (command.RequestPayload != null && command.RequestPayload.Length > 0)
+                {
+                    ms.Write(command.RequestPayload);
+                    dataLenAfterReqSeq = (ushort)(dataLenAfterReqSeq + command.RequestPayload.Length);
+                }
             }
+
+            ms.Position = pos;
+            WriteBigEndian(ms, dataLenAfterReqSeq);
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+        // 3. Read Records by Start Time (07H)
+        public byte[] BuildReadRecordsByTimeRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId, byte[] bcdStartTime, byte recordLimit)
+        {
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId, frameNumber);
+
+            // طول بایت‌های بعد از شماره توالی ثابت و برابر با 9 بایت است
+            WriteBigEndian(ms, (ushort)9);
+            ms.WriteByte(0x07); // Function Code
+            WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
+
+            WriteBigEndian(ms, recordObjectId); // Data Object ID
+            ms.Write(bcdStartTime); // Record start time (6 Bytes BCD)
+            ms.WriteByte(recordLimit); // Record count limit
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+        // 4. Read Recent Records (08H)
+        public byte[] BuildReadRecentRecordsRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId, byte recordCount)
+        {
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId, frameNumber);
+
+            // طول بایت‌های بعد از شماره توالی ثابت و برابر با 9 بایت است
+            WriteBigEndian(ms, (ushort)9);
+            ms.WriteByte(0x08); // Function Code
+            WriteBigEndian(ms, requestNumber); // SequenceNumber / REQID
+
+            WriteBigEndian(ms, recordObjectId); // Record file number
+            ms.WriteByte(recordCount); // Number of records read
+
+            byte[] padding = new byte[6]; // پر کردن بایت‌های رزرو جهت حفظ ساختار فریم
+            ms.Write(padding);
 
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }

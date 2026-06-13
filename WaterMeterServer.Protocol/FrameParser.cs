@@ -12,9 +12,10 @@ namespace WaterMeterServer.Protocol
 
         public FrameParser(ICryptoService cryptoService) => _cryptoService = cryptoService;
 
-        public bool TryParse(ref ReadOnlySequence<byte> buffer, out MeterFrame? frame)
+        public bool TryParse(ref ReadOnlySequence<byte> buffer, out MeterFrame? frame, out byte[]? data)
         {
             frame = null;
+            data = null;
             var reader = new SequenceReader<byte>(buffer);
 
             // ۱. جستجوی HEAD (0x68) 
@@ -41,7 +42,7 @@ namespace WaterMeterServer.Protocol
                 return false;
             }
 
-            // ۳. بررسی CRC16 مطابق Appendix C [cite: 131, 274]
+            // ۳. بررسی CRC16 مطابق Appendix C 
             ushort receivedCrc = Utils.ReadUInt16BigEndianAt(frameSeq, totalLen - 3);
             ushort computedCrc = Crc16.Calculate(frameSeq.Slice(5, totalLen - 8));
 
@@ -51,7 +52,7 @@ namespace WaterMeterServer.Protocol
                 return false;
             }
 
-            // ۴. دکریپت کردن بخش داده (Data Domain) [cite: 94, 95]
+            // ۴. دکریپت کردن بخش داده (Data Domain) 
             var encryptedPayload = frameSeq.Slice(7, totalLen - 10);
             byte[] decryptedData = _cryptoService.Decrypt(encryptedPayload);
 
@@ -67,7 +68,8 @@ namespace WaterMeterServer.Protocol
             );
 
             if(frame.Type == ProtocolConstants.TypeTransport) frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0,4));
-
+            
+            data = frameSeq.ToArray();
             buffer = buffer.Slice(frameSeq.End);
             return true;
         }

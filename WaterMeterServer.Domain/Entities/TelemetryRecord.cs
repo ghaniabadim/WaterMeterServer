@@ -1,10 +1,14 @@
-﻿namespace WaterMeterServer.Domain.Entities
+﻿using NodaTime;
+using System.Reflection.Metadata;
+
+namespace WaterMeterServer.Domain.Entities
 {
     public class TelemetryRecord
     {
-        public int DeviceId { get; set; }
-        public DateTime RecordedAt { get; set; } // زمان ثبت در سرور
-        public DateTime TerminalTime { get; set; } // زمان ساعت داخلی کنتور
+        public long DeviceId { get; set; }
+        public Device Device { get; set; } = null!;
+        public Instant RecordedAt { get; set; }
+        public Instant TerminalTime { get; set; }
 
         public double MainVoltage { get; set; }
         public double BackupVoltage { get; set; }

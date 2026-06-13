@@ -1,5 +1,6 @@
 ﻿using System.IO.Pipelines;
 using System.Net;
+using WaterMeterServer.Domain.Entities;
 
 namespace WaterMeterServer.Domain.Models
 {
@@ -25,5 +26,7 @@ namespace WaterMeterServer.Domain.Models
         public PipeWriter Writer { get; set; } = null!;
 
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
+        public Device Device { get; set; }
+        public ushort SequenceNumber { get; set; }
     }
 }

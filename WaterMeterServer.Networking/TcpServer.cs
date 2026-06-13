@@ -1,26 +1,29 @@
-﻿using System.Net;
-using System.Net.Sockets;
+﻿using Microsoft.Extensions.Logging;
 using System.IO.Pipelines;
-using Microsoft.Extensions.Logging;
-using WaterMeterServer.Protocol;
+using System.Net;
+using System.Net.Sockets;
 using WaterMeterServer.Application.Dispatchers;
+using WaterMeterServer.Domain.Entities;
 using WaterMeterServer.Domain.Models;
+using WaterMeterServer.Infrastructure.Logging;
+using WaterMeterServer.Protocol;
 
 namespace WaterMeterServer.Networking
 {
     public class TcpServer
     {
-        private readonly int _port;
-        private readonly FrameParser _parser;
+        private readonly int                _port;
+        private readonly FrameParser        _parser;
         private readonly ILogger<TcpServer> _logger;
-        private readonly FrameDispatcher _dispatcher;
-
-        public TcpServer(int port, FrameParser parser, FrameDispatcher dispatcher, ILogger<TcpServer> logger)
+        private readonly FrameDispatcher    _dispatcher;
+        private readonly LogQueue           _logQueue;
+        public TcpServer(int port, FrameParser parser, FrameDispatcher dispatcher, ILogger<TcpServer> logger,LogQueue logQueue)
         {
             _port = port;
             _parser = parser;
             _dispatcher = dispatcher;
             _logger = logger;
+            _logQueue = logQueue;
         }
 
         public async Task StartAsync(CancellationToken ct)
@@ -74,17 +77,38 @@ namespace WaterMeterServer.Networking
 
                 try
                 {
-                    while (_parser.TryParse(ref buffer, out var frame))
+                    while (_parser.TryParse(ref buffer, out var frame,out var data))
                     {
                         if (frame != null)
                         {
                             // ارسال فریم به لایه اپلیکیشن و دریافت پاسخ احتمالی
                             var response = await dispatcher.DispatchAsync(frame, context);
 
+                            var meterId = context.MeterId ?? "UNKNOWN";
+                            var connectionId = context.ConnectionId ?? "UNKNOWN_CONNECTION";
+
+                            await _logQueue.Writer.WriteAsync(new CommunicationLog
+                            {
+                                MeterId = meterId,
+                                ConnectionId = connectionId,
+                                Direction = "Inbound",
+                                RawData = data!,
+                                Timestamp = DateTime.UtcNow
+                            });
+
                             if (response != null)
                             {
                                 await context.Writer.WriteAsync(response);
                                 await context.Writer.FlushAsync();
+
+                                await _logQueue.Writer.WriteAsync(new CommunicationLog
+                                {
+                                    MeterId = meterId,
+                                    ConnectionId = connectionId,
+                                    Direction = "Outbound",
+                                    RawData = response!,
+                                    Timestamp = DateTime.UtcNow
+                                });
 
                                 if (context.CurrentState == ConnectionContext.TransportState.EndConnection)
                                 {
