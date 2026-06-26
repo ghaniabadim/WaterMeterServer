@@ -23,6 +23,9 @@ namespace WaterMeterServer.Domain.Interfaces
 
 
         // فریم‌های مربوط به آپدیت فریمور (بخش ۸ سند)
-        byte[] BuildWriteFirmwareRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort objectId, byte[] payload);
+        public byte[] BuildFirmwareInfo(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, string targetVersion, int fileSize, uint fileCrc32);
+        public byte[] BuildWriteFirmwareRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, string currentVersion, string targetVersion);
+        public byte[] BuildUpgradeStatusResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status);
+
     }
 }

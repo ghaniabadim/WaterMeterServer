@@ -159,8 +159,9 @@ namespace WaterMeterServer.Application.Dispatchers
                     return await HandleTransportAsync(frame, context);
 
                 case ConnectionContext.TransportState.FirmwareUpgrading:
-                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
-                    return await HandleTransportAsync(frame, context);
+                    _logger.LogInformation("Processing Firmware Upgrading state for Session: {SessionId}", context.SessionId);
+                        return await HandleFirmwareUpgrade(frame, context);
+
 
                 case ConnectionContext.TransportState.EndConnection:
                     uint sessionIdToByte = context.SessionId ?? frame.SessionId;
@@ -171,6 +172,7 @@ namespace WaterMeterServer.Application.Dispatchers
             }
         }
 
+       
         private async Task<byte[]?> SendPendingCommands(MeterFrame frame, ConnectionContext context)
         {
             byte[] result = null;
@@ -347,8 +349,6 @@ namespace WaterMeterServer.Application.Dispatchers
         // ==================== ۲. تابع تفکیک‌شده پردازش پاسخ چند آبجکتی نوشتن (0x85) ====================
         private async Task HandleWriteObjectsBatch(byte[] data, byte objectCount, List<DeviceCommandLog> batch, WaterMeterDbContext db, long deviceId)
         {
-
-
             int offset = 12;
 
             // پیمایش جفت‌های فشرده ۳ بایتی: [2 بایت اوبجکت آی‌دی] + [1 بایت نتیجه رایت]
@@ -392,8 +392,8 @@ namespace WaterMeterServer.Application.Dispatchers
         // ==================== ۳. تابع تفکیک‌شده پردازش پاسخ سوابق و آرشیو (0x87 و 0x88) ====================
         private void HandleRecordResponseBatch(byte[] data, byte functionCode, List<DeviceCommandLog> batch)
         {
-            byte recordCount = data[7]; // بایت 7 طبق سند لایه انتقال تعداد رکوردهای موجود است
-            var mainCmd = batch.First(); // دستور سوابق تاریخی همیشه تک اوبجکتی فرستاده می‌شود
+            byte recordCount = data[12]; 
+            var mainCmd = batch.First(); 
 
             if (recordCount == 0xFF)
             {
@@ -697,6 +697,239 @@ namespace WaterMeterServer.Application.Dispatchers
             }
         }
 
+        private async Task<byte[]?> HandleFirmwareUpgrade(MeterFrame frame, ConnectionContext context)
+        {
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
+
+                var upgradeRequest = await db.FirmwareUpgradeRequests
+                    .FirstOrDefaultAsync(r => r.MeterId == context.MeterId &&
+                                              r.State != UpgradeState.Completed &&
+                                              r.State != UpgradeState.Failed);
+
+                if (upgradeRequest == null)
+                {
+                    _logger.LogWarning("No active firmware upgrade request found for Meter: {MeterId}. Terminating connection.", context.MeterId);
+                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                    return await HandleTransportAsync(frame, context);
+                }
+
+                ushort nextFrameNo = (ushort)(frame.FrameNo + 1);
+
+                switch (upgradeRequest.State)
+                {
+                    case UpgradeState.Idle:
+                        {
+                            _logger.LogInformation("Step 1: Sending Server Upgrade Request (430CH) to Meter: {MeterId}", context.MeterId);
+
+                            string currentVersion = context.Device?.FirmwareVersion ?? "1403.01.01";
+
+                            // فراخوانی متد اصلاح شده با کانتکست سشن زنده دات‌نت
+                            byte[] responseBytes = _protocolBuilder.BuildWriteFirmwareRequest(
+                                frame.SessionId,
+                                frame.Mid,
+                                nextFrameNo,
+                                (ushort)upgradeRequest.Id,
+                                currentVersion,
+                                upgradeRequest.TargetVersion
+                            );
+
+                            upgradeRequest.State = UpgradeState.RequestInitiated;
+                            await db.SaveChangesAsync();
+                            return responseBytes;
+                        }
+
+                    case UpgradeState.RequestInitiated:
+                        {
+                            _logger.LogInformation("Step 2: Sending Firmware Info (4305H) to Meter: {MeterId}", context.MeterId);
+
+                            byte[] responseBytes = _protocolBuilder.BuildFirmwareInfo(
+                                frame.SessionId,
+                                frame.Mid,
+                                nextFrameNo,
+                                (ushort)upgradeRequest.Id,
+                                upgradeRequest.TargetVersion,
+                                upgradeRequest.FileSize,
+                                upgradeRequest.FileCrc32
+                            );
+
+                            upgradeRequest.State = UpgradeState.InfoSent;
+                            await db.SaveChangesAsync();
+                            return responseBytes;
+                        }
+
+                    case UpgradeState.InfoSent:
+                    case UpgradeState.SegmentRequested:
+                    case UpgradeState.DataTransferring:
+                        {
+                            _logger.LogInformation("Processing active transfer frame for Meter: {MeterId} in state {State}", context.MeterId, upgradeRequest.State);
+
+                            // تراز کردن آفست فیزیکی:
+                            // بایت 0 و 1: Data Length
+                            // بایت 2: Function Code
+                            // بایت 3 و 4: Request sequence number (REQID)
+                            // بایت 5: Number of Objects
+                            int currentOffset = 5;
+                            if (frame.DecryptedData == null || frame.DecryptedData.Length < currentOffset + 1)
+                            {
+                                _logger.LogWarning("Invalid or short firmware transport payload from Meter: {MeterId}", context.MeterId);
+                                context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                return await HandleTransportAsync(frame, context);
+                            }
+
+                            byte objCount = frame.DecryptedData[currentOffset++];
+
+                            for (int i = 0; i < objCount; i++)
+                            {
+                                if (currentOffset + 2 > frame.DecryptedData.Length) break;
+                                ushort objId = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(currentOffset, 2));
+                                currentOffset += 2;
+
+                                // حالت اول (4306H): کنتور درخواست قطعه فریمور (Segment) داده است
+                                if (objId == 0x4306)
+                                {
+                                    if (currentOffset + 8 > frame.DecryptedData.Length) break;
+
+                                    // بر اساس مستندات تصویر اول: 4 بایت آفست قطعه + 4 بایت طول قطعه درخواستی
+                                    int requestedOffset = BinaryPrimitives.ReadInt32BigEndian(frame.DecryptedData.AsSpan(currentOffset, 4));
+                                    currentOffset += 4;
+                                    int requestedLength = BinaryPrimitives.ReadInt32BigEndian(frame.DecryptedData.AsSpan(currentOffset, 4));
+                                    currentOffset += 4;
+
+                                    _logger.LogInformation("Meter requested segment. Offset: {Offset}, Length: {Length}", requestedOffset, requestedLength);
+
+                                    var firmware = await db.FirmwareVersions.FirstOrDefaultAsync(v => v.VersionString == upgradeRequest.TargetVersion);
+                                    if (firmware == null || requestedOffset >= firmware.BinaryData.Length)
+                                    {
+                                        _logger.LogError("Requested firmware version not found or offset out of bounds.");
+                                        upgradeRequest.State = UpgradeState.Failed;
+                                        upgradeRequest.LastErrorMessage = "Firmware binary missing or invalid offset request.";
+                                        await db.SaveChangesAsync();
+
+                                        context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                        return await HandleTransportAsync(frame, context);
+                                    }
+
+                                    int availableLength = Math.Min(requestedLength, firmware.BinaryData.Length - requestedOffset);
+                                    byte[] chunkData = new byte[availableLength];
+                                    Array.Copy(firmware.BinaryData, requestedOffset, chunkData, 0, availableLength);
+
+                                    upgradeRequest.CurrentOffset = requestedOffset + availableLength;
+
+                                    // اگر آفست به انتهای فایل رسید، وضعیت تغییر میکند
+                                    upgradeRequest.State = (upgradeRequest.CurrentOffset >= upgradeRequest.FileSize)
+                                        ? UpgradeState.WaitingForStatus
+                                        : UpgradeState.DataTransferring;
+
+                                    upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
+                                    await db.SaveChangesAsync();
+
+                                    return _protocolBuilder.BuildFirmwareChunkResponse(
+                                        frame.SessionId,
+                                        frame.Mid,
+                                        nextFrameNo,
+                                        (ushort)upgradeRequest.Id,
+                                        requestedOffset,
+                                        chunkData
+                                    );
+                                }
+
+                                // حالت دوم (4304H): بررسی کدهای خطای میانی ارسال شده توسط سخت‌افزار کنتور
+                                if (objId == 0x4304)
+                                {
+                                    byte failStatus = frame.DecryptedData[currentOffset++];
+                                    _logger.LogWarning("Meter reported an interim upgrade failure/status: {Status}", failStatus);
+
+                                    upgradeRequest.State = UpgradeState.Failed;
+                                    upgradeRequest.LastErrorMessage = $"Interim failure reported by meter: Code {failStatus}";
+                                    await db.SaveChangesAsync();
+
+                                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                    return await HandleTransportAsync(frame, context);
+                                }
+                            }
+                            return null;
+                        }
+
+                    case UpgradeState.WaitingForStatus:
+                        {
+                            _logger.LogInformation("Firmware transfer complete. Parsing final status (4304H) from Meter: {MeterId}", context.MeterId);
+
+                            int currentOffset = 5;
+                            if (frame.DecryptedData == null || frame.DecryptedData.Length < currentOffset + 1)
+                            {
+                                context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                return await HandleTransportAsync(frame, context);
+                            }
+
+                            byte objCount = frame.DecryptedData[currentOffset++];
+                            for (int i = 0; i < objCount; i++)
+                            {
+                                if (currentOffset + 2 > frame.DecryptedData.Length) break;
+                                ushort objId = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(currentOffset, 2));
+                                currentOffset += 2;
+
+                                if (objId == 0x4304) // تایید وضعیت دانلود نهایی
+                                {
+                                    byte finalStatus = frame.DecryptedData[currentOffset++];
+                                    _logger.LogInformation("Final Firmware Upgrade Status received from hardware: {Status}", finalStatus);
+
+                                    var log = new FirmwareUpgradeLog
+                                    {
+                                        DeviceId = context.Device?.Id ?? 0,
+                                        LastOffsetSent = upgradeRequest.CurrentOffset,
+                                        FinishedAt = DateTime.UtcNow,
+                                        ExecutionDate = DateTime.UtcNow,
+                                        StartedAt = upgradeRequest.CreatedAt,
+                                        FirmwareVersionId = 1 // فرض بر وجود شناسه فریمور ثبت شده در ریلیشن شما
+                                    };
+
+                                    // طبق مستندات تصویر اول (توضیحات فیلد 4304):
+                                    // کد 3: Firmware download complete, awaiting installation
+                                    // کد 5: Firmware installation successful
+                                    if (finalStatus == 3 || finalStatus == 5)
+                                    {
+                                        upgradeRequest.State = UpgradeState.Completed;
+                                        log.Status = FirmwareUpgradeStatus.Completed;
+                                        log.IsSuccess = true;
+                                        log.Description = $"Upgrade successful. Meter reported final status: {finalStatus}";
+
+                                        if (context.Device != null)
+                                        {
+                                            context.Device.FirmwareVersion = upgradeRequest.TargetVersion;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        upgradeRequest.State = UpgradeState.Failed;
+                                        upgradeRequest.LastErrorMessage = $"Upgrade failed at terminal with status code: {finalStatus}";
+
+                                        log.Status = FirmwareUpgradeStatus.Failed;
+                                        log.IsSuccess = false;
+                                        log.ErrorMessage = upgradeRequest.LastErrorMessage;
+                                        log.Description = $"Failed code reported by water meter processor: {finalStatus}";
+                                    }
+
+                                    await db.FirmwareUpgradeLogs.AddAsync(log);
+                                    await db.SaveChangesAsync();
+
+                                    // ارسال پکت تاییدیه نهایی 430EH به کنتور جهت بستن لوپ لایه ارتقا
+                                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                    return _protocolBuilder.BuildUpgradeStatusResponse(frame.SessionId, frame.Mid, nextFrameNo, (ushort)upgradeRequest.Id, 0x01);
+                                }
+                            }
+
+                            context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                            return await HandleTransportAsync(frame, context);
+                        }
+
+                    default:
+                        context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                        return await HandleTransportAsync(frame, context);
+                }
+            }
+        }
         private async Task ProcessTelemetryObject(MeterFrame frame, long deviceId, ConnectionContext context)
         {
             try

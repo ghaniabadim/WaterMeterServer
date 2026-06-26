@@ -93,5 +93,30 @@ namespace WaterMeterServer.Protocol
             return sb.ToString();
         }
 
+        public static byte[] StringToBcd(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return new byte[0];
+
+            // اگر طول رشته فرد بود، یک صفر به سمت چپ آن پد می‌کنیم تا جفت بایت‌ها کامل شوند
+            if (text.Length % 2 != 0)
+            {
+                text = "0" + text;
+            }
+
+            byte[] bcd = new byte[text.Length / 2];
+
+            for (int i = 0; i < bcd.Length; i++)
+            {
+                int highNibble = text[i * 2] - '0';
+                int lowNibble = text[i * 2 + 1] - '0';
+
+                // ترکیب دو رقم به عنوان یک بایت فشرده BCD
+                bcd[i] = (byte)((highNibble << 4) | (lowNibble & 0x0F));
+            }
+
+            return bcd;
+        }
+
     }
 }
