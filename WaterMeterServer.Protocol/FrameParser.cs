@@ -24,7 +24,7 @@ namespace WaterMeterServer.Protocol
                 buffer = buffer.Slice(buffer.End);
                 return false;
             }
-
+            
             var startPos = reader.Position;
             if (reader.Remaining < 10) return false; // حداقل طول فریم 
 

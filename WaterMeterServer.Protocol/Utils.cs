@@ -118,5 +118,34 @@ namespace WaterMeterServer.Protocol
             return bcd;
         }
 
+        public static ushort CalculateCrc16(byte[] chunkData)
+        {
+            if (chunkData == null || chunkData.Length == 0)
+                return 0x0000;
+
+            ushort wCRCin = 0x0000; 
+            ushort wCPoly = 0x1021; 
+
+            for (int i = 0; i < chunkData.Length; i++)
+            {
+                byte wChar = chunkData[i];
+
+                wCRCin ^= (ushort)(wChar << 8);
+
+                for (int bit = 0; bit < 8; bit++)
+                {
+                    if ((wCRCin & 0x8000) != 0)
+                    {
+                        wCRCin = (ushort)((wCRCin << 1) ^ wCPoly); 
+                    }
+                    else
+                    {
+                        wCRCin = (ushort)(wCRCin << 1); 
+                    }
+                }
+            }
+
+            return wCRCin; 
+        }
     }
 }

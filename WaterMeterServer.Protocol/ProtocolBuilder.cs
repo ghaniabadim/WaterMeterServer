@@ -28,7 +28,7 @@ namespace WaterMeterServer.Protocol
             composite.Slice(0, 20).CopyTo(business);
 
             int offset = 20;
-            BinaryPrimitives.WriteUInt16BigEndian(business.AsSpan(offset), handshakeSataus); 
+            BinaryPrimitives.WriteUInt16BigEndian(business.AsSpan(offset), handshakeSataus);
             offset += 2;
             BinaryPrimitives.WriteUInt32BigEndian(business.AsSpan(offset), sessionId);
 
@@ -80,7 +80,7 @@ namespace WaterMeterServer.Protocol
             int month = pc.GetMonth(now);
             int day = pc.GetDayOfMonth(now);
 
-            business[offset++] = Utils.ByteToBcd(year%100);
+            business[offset++] = Utils.ByteToBcd(year % 100);
             business[offset++] = Utils.ByteToBcd(month);
             business[offset++] = Utils.ByteToBcd(day);
             business[offset++] = Utils.ByteToBcd(now.Hour);
@@ -177,6 +177,94 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
+        // درخواست شروع ارتقا (430CH)
+        public byte[] BuildWriteFirmwareRequest(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string currentVersion, string targetVersion)
+        {
+            // 9FD1A793 0001 000C 02 0000 01 430C 01 02605302 02605301
+            // 6001F438 0001 000C 02 0001 01 430C 01 02605303 02605302
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
+
+            WriteBigEndian(ms, (ushort)0x000C); // Datalength
+            ms.WriteByte(0x02); // Function code
+            WriteBigEndian(ms, requestNumber);
+
+            ms.WriteByte(0x01); // Num.Object
+            WriteBigEndian(ms, (ushort)0x430C); // Firmware upgrade request
+
+            ms.WriteByte(0x01); // Upgrade Flag
+
+            byte[] targetVersionBytes = Utils.StringToBcd(targetVersion.Replace("V", "").Replace(".", "").PadLeft(8, '0'));
+            byte[] currentVersionBytes = Utils.StringToBcd(currentVersion.Replace("V", "").Replace(".", "").PadLeft(8, '0'));
+
+            ms.Write(targetVersionBytes, 0, 4);
+            ms.Write(currentVersionBytes, 0, 4);
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+        // ارسال اطلاعات توصیفی فریمور (4305H)
+        public byte[] BuildFirmwareInfo(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string targetVersion, int fileSize, uint fileCrc32)
+        {
+            // 9FD1A793 0002 000F 02 0000 01 4305 02605302 00000F00 EE2FCC70
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
+
+            WriteBigEndian(ms, (ushort)0x000F); // Datalength
+            ms.WriteByte(0x02); // Function Code
+            WriteBigEndian(ms, requestNumber);
+
+            ms.WriteByte(0x01);
+            WriteBigEndian(ms, (ushort)0x4305);
+
+            byte[] versionBytes = Utils.StringToBcd(targetVersion.Replace("V", "").Replace(".", "").PadLeft(8, '0'));
+            ms.Write(versionBytes, 0, 4);
+
+            byte[] sizeBytes = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(sizeBytes, fileSize);
+            ms.Write(sizeBytes);
+
+            byte[] crcBytes = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(crcBytes, fileCrc32);
+            ms.Write(crcBytes);
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+        // ارسال پکت دیتا قطعات باینری (4307H)
+        public byte[] BuildFirmwareChunkResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, int currentOffset, byte[] chunkData)
+        {
+            // 9FD1A793 0003 010D 02 0000 01 4307 00000000 00000100 AAAAAAAAA026......0FE00FE0 276A
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
+
+            ushort dataLen = (ushort)(13 + chunkData.Length);
+            WriteBigEndian(ms, dataLen);
+
+            ms.WriteByte(0x02);
+            WriteBigEndian(ms, requestNumber);
+            ms.WriteByte(0x01);
+            WriteBigEndian(ms, (ushort)0x4307);
+
+            byte[] offsetBytes = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(offsetBytes, currentOffset);
+            ms.Write(offsetBytes);
+
+            byte[] lenBytes = new byte[4];
+            BinaryPrimitives.WriteInt32BigEndian(lenBytes, chunkData.Length);
+            ms.Write(lenBytes);
+
+            ms.Write(chunkData, 0, chunkData.Length);
+
+            ushort chunkCrc16 = Utils.CalculateCrc16(chunkData);
+            byte[] crc16Bytes = new byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(crc16Bytes, chunkCrc16);
+            ms.Write(crc16Bytes);
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+
         private byte[] WrapPacket(byte type, byte mid, byte ctrl, byte[] encryptedData)
         {
             int totalLen = 10 + encryptedData.Length;
@@ -218,74 +306,12 @@ namespace WaterMeterServer.Protocol
             s.Write(b);
         }
 
-        public byte[] BuildWriteFirmwareRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, string currentVersion, string targetVersion)
+        private void WriteBigEndian(MemoryStream ms, ushort value)
         {
-            using var ms = new MemoryStream();
-            WriteStandardHeader(ms, sessionId, frameNumber);
+            byte[] buffer = new byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(buffer, value);
+            ms.Write(buffer, 0, 2);
 
-            // طول داده تجاری بعد از REQID:
-            // Number of Objects (1B) + Object ID (2B) + Status flag (1B) + Target FW (4B BCD) + Current FW (4B BCD) = 12
-            WriteBigEndian(ms, (ushort)12);
-            ms.WriteByte(0x02); // Function Code: Data object distribution (02H)
-            WriteBigEndian(ms, requestNumber); // Sequence Number
-            ms.WriteByte(0x01); // Number of objects: 1
-            WriteBigEndian(ms, 0x430C); // Object ID: Server upgrade request (430CH)
-
-            ms.WriteByte(0x01); // Upgrade Flag: 0x01 confirms the upgrade flag (طبق تصویر اول)
-
-            // تبدیل ورژن‌های رشته‌ای به آرایه 4 بایتی BCD (فرمت فیزیکی سخت‌افزار کنتور)
-            byte[] targetBcd = Utils.StringToBcd(targetVersion.Replace(".", "").PadLeft(8, '0'));
-            byte[] currentBcd = Utils.StringToBcd(currentVersion.Replace(".", "").PadLeft(8, '0'));
-
-            ms.Write(targetBcd, 0, 4);
-            ms.Write(currentBcd, 0, 4);
-
-            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
-        }
-
-        // ۲. ساخت اطلاعات کلی فایل فریمور جهت اعتبارسنجی (آبجکت 4305H با Function Code 0x02)
-        public byte[] BuildFirmwareInfo(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, string targetVersion, int fileSize, uint fileCrc32)
-        {
-            using var ms = new MemoryStream();
-            WriteStandardHeader(ms, sessionId, frameNumber);
-
-            // طول داده تجاری بعد از REQID:
-            // Number of Objects (1B) + Object ID (2B) + Target FW (4B BCD) + File Size (4B) + CRC32 (4B) = 15
-            WriteBigEndian(ms, (ushort)15);
-            ms.WriteByte(0x02); // Function Code: Data object distribution (02H)
-            WriteBigEndian(ms, requestNumber);
-            ms.WriteByte(0x01); // Number of objects: 1
-            WriteBigEndian(ms, 0x4305); // Object ID: Firmware information (4305H)
-
-            byte[] targetBcd = Utils.StringToBcd(targetVersion.Replace(".", "").PadLeft(8, '0'));
-            ms.Write(targetBcd, 0, 4);
-
-            byte[] sizeBytes = new byte[4];
-            BinaryPrimitives.WriteInt32BigEndian(sizeBytes, fileSize);
-            ms.Write(sizeBytes);
-
-            byte[] crcBytes = new byte[4];
-            BinaryPrimitives.WriteUInt32BigEndian(crcBytes, fileCrc32);
-            ms.Write(crcBytes);
-
-            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
-        }
-
-        // ۳. پاسخ به قطعات فریمور ارسال شده و تایید سکتور نصب (آبجکت 430EH)
-        public byte[] BuildUpgradeStatusResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status)
-        {
-            using var ms = new MemoryStream();
-            WriteStandardHeader(ms, sessionId, frameNumber);
-
-            // طول داده تجاری بعد از REQID: 1B ObjectCount + 2B ObjectID + 1B Status = 4
-            WriteBigEndian(ms, (ushort)4);
-            ms.WriteByte(0x02); // Function Code: 02H
-            WriteBigEndian(ms, requestNumber);
-            ms.WriteByte(0x01); // Number of objects: 1
-            WriteBigEndian(ms, 0x430E); // Object ID: 430EH
-            ms.WriteByte(status); // 0x01: server confirmed receiving upgrade status
-
-            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
     }
 }
