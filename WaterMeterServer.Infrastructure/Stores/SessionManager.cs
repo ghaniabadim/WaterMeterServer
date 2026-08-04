@@ -12,9 +12,9 @@ namespace WaterMeterServer.Infrastructure.Stores
         public uint GenerateSessionId(string meterSerialNumber)
         {
             // استفاده از یک مقدار رندوم یا بخشی از سریال برای امنیت بیشتر
-            //uint sid = (uint)new Random().Next(0x10000000, 0x7FFFFFFF);
+            uint sid = (uint)new Random().Next(0x10000000, 0x7FFFFFFF);
 
-            uint sid = 0x6001f438;
+            //uint sid = 0x6001f438;
             _activeSessions[meterSerialNumber] = sid;
             _sessionToMeterMap[sid] = meterSerialNumber;
             return sid;

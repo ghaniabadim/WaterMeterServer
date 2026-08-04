@@ -313,5 +313,10 @@ namespace WaterMeterServer.Protocol
             ms.Write(buffer, 0, 2);
 
         }
+
+        public byte[] BuildUpgradeStatusResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status)
+        {
+            throw new NotImplementedException();
+        }
     }
 }
