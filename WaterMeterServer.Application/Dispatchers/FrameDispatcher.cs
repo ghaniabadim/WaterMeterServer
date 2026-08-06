@@ -188,7 +188,7 @@ namespace WaterMeterServer.Application.Dispatchers
             {
                 var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
 
-                // 1. Find active upgrade request
+                // 1. جستجوی درخواست ارتقای فعال برای این شماره کنتور
                 var upgradeRequest = await db.FirmwareUpgradeRequests
                     .FirstOrDefaultAsync(r => r.MeterId == context.MeterId &&
                                               r.State != UpgradeState.Completed &&
@@ -196,73 +196,81 @@ namespace WaterMeterServer.Application.Dispatchers
 
                 if (upgradeRequest == null)
                 {
-                    _logger.LogWarning("[FOTA] No active firmware upgrade request found for Meter: {MeterId}. Terminating connection.", context.MeterId);
+                    _logger.LogInformation("[FOTA] No active firmware upgrade request found for Meter: {MeterId}. Moving to EndConnection.", context.MeterId);
                     context.CurrentState = ConnectionContext.TransportState.EndConnection;
                     return await HandleTransportAsync(frame, context);
                 }
 
                 ushort nextFrameNo = (ushort)(frame.FrameNo + 1);
-                int payloadOffset = 5; // Skip SessionId (4B) and FrameNo (1B)
+                int payloadOffset = 5; // SessionId (4B) + FrameNo/Reserved (1B)
 
                 switch (upgradeRequest.State)
                 {
                     case UpgradeState.Idle:
                         {
-                            // Step 1: Send Server Upgrade Request (430C) [cite: 216]
-                            _logger.LogInformation("[FOTA] Step 1: Sending Server Upgrade Request (430CH) to Meter: {MeterId}", context.MeterId);
+                            // Step 1: ارسال درخواست ارتقا به کنتور (430CH)
+                            _logger.LogInformation("[FOTA] Step 1: Initiating Firmware Upgrade (430CH) for Meter: {MeterId}", context.MeterId);
 
                             string currentVersion = context.Device?.FirmwareVersion ?? "02605302";
+                            ushort currentReqSeq = ++context.SequenceNumber;
+
                             byte[] responseBytes = _protocolBuilder.BuildWriteFirmwareRequest(
                                 context.SessionId,
                                 frame.Mid,
                                 nextFrameNo,
-                                ++context.SequenceNumber,
+                                currentReqSeq,
                                 currentVersion,
                                 upgradeRequest.TargetVersion
                             );
 
                             upgradeRequest.State = UpgradeState.RequestInitiated;
+                            upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
                             await db.SaveChangesAsync();
+
                             return responseBytes;
                         }
 
                     case UpgradeState.RequestInitiated:
                         {
-                            // Validate initial acceptance status (4304) [cite: 216]
-                            _logger.LogInformation("[FOTA] Step 1.5: Verifying acceptance status (4304H) from Meter: {MeterId}", context.MeterId);
+                            // Step 1.5: دریافت تایید اولیه از کنتور (4304H)
+                            _logger.LogInformation("[FOTA] Step 1.5: Validating Upgrade Acceptance (4304H) from Meter: {MeterId}", context.MeterId);
 
                             if (!TryFindObjectInPayload(frame.DecryptedData, payloadOffset, FirmwareObjectIds.UpgradeStatus, out byte[] statusData))
                             {
-                                _logger.LogWarning("[FOTA] Protocol Mismatch: Expected 4304H status confirmation from meter {MeterId}.", context.MeterId);
+                                _logger.LogWarning("[FOTA] Protocol Error: Expected 4304H status response from Meter {MeterId}.", context.MeterId);
                                 return null;
                             }
 
                             byte meterStatus = statusData[0];
-                            if (meterStatus != 0x04 && meterStatus != 0x01)
+                            if (meterStatus != 0x01 && meterStatus != 0x04)
                             {
-                                _logger.LogError("[FOTA] Meter rejected upgrade request. Status code: {Status}", meterStatus);
+                                _logger.LogError("[FOTA] Meter rejected upgrade request. Status Code: {Status}", meterStatus);
                                 upgradeRequest.State = UpgradeState.Failed;
-                                upgradeRequest.LastErrorMessage = $"Upgrade rejected with status: {meterStatus}";
+                                upgradeRequest.LastErrorMessage = $"Upgrade rejected by terminal with code: 0x{meterStatus:X2}";
                                 await db.SaveChangesAsync();
+
                                 context.CurrentState = ConnectionContext.TransportState.EndConnection;
                                 return await HandleTransportAsync(frame, context);
                             }
 
-                            // Step 2: Send Firmware Info (4305H) [cite: 216]
+                            // Step 2: ارسال مشخصات فریم‌ور (4305H)
                             _logger.LogInformation("[FOTA] Step 2: Sending Firmware Info (4305H) to Meter: {MeterId}", context.MeterId);
 
+                            ushort currentReqSeq = ++context.SequenceNumber;
                             byte[] responseBytes = _protocolBuilder.BuildFirmwareInfo(
                                 context.SessionId,
                                 frame.Mid,
                                 nextFrameNo,
-                                ++context.SequenceNumber,
+                                currentReqSeq,
                                 upgradeRequest.TargetVersion,
                                 upgradeRequest.FileSize,
                                 upgradeRequest.FileCrc32
                             );
 
                             upgradeRequest.State = UpgradeState.InfoSent;
+                            upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
                             await db.SaveChangesAsync();
+
                             return responseBytes;
                         }
 
@@ -270,31 +278,46 @@ namespace WaterMeterServer.Application.Dispatchers
                     case UpgradeState.SegmentRequested:
                     case UpgradeState.DataTransferring:
                         {
-                            // Step 3: Handle Block Request Flow Control (4306H) [cite: 216]
                             if (TryFindObjectInPayload(frame.DecryptedData, payloadOffset, FirmwareObjectIds.Segmentation, out byte[] segmentParams))
                             {
+                                ushort incomingReqSeq = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(2, 2));
                                 int requestedOffset = BinaryPrimitives.ReadInt32BigEndian(segmentParams.AsSpan(0, 4));
                                 int requestedLength = BinaryPrimitives.ReadInt32BigEndian(segmentParams.AsSpan(4, 4));
 
-                                _logger.LogInformation("[FOTA] Flow Control: Meter requested Offset: {Offset}, Length: {Length}", requestedOffset, requestedLength);
+                                _logger.LogInformation("[FOTA Stream] Meter: {MeterId} requested Offset: {Offset}, Length: {Length}",
+                                    context.MeterId, requestedOffset, requestedLength);
 
-                                var firmware = await db.FirmwareVersions.FirstOrDefaultAsync(v => v.VersionString == upgradeRequest.TargetVersion);
-                                if (firmware == null || requestedOffset >= firmware.BinaryData.Length)
+                                // خواندن قطعه مستقیم از دیسک سخت با استفاده از FilePath موجود در UpgradeRequest
+                                byte[] chunkData;
+                                try
                                 {
-                                    _logger.LogError("[FOTA] Target firmware binary missing or offset out of bounds.");
+                                    var storageService = scope.ServiceProvider.GetRequiredService<IFirmwareStorageService>();
+                                    chunkData = await storageService.ReadChunkAsync(upgradeRequest.FilePath, requestedOffset, requestedLength);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(ex, "[FOTA Stream] Failed to read chunk from disk. Path: {FilePath}", upgradeRequest.FilePath);
                                     upgradeRequest.State = UpgradeState.Failed;
-                                    upgradeRequest.LastErrorMessage = "Firmware binary missing or invalid offset request.";
+                                    upgradeRequest.LastErrorMessage = "IO Error reading firmware file from disk.";
                                     await db.SaveChangesAsync();
 
                                     context.CurrentState = ConnectionContext.TransportState.EndConnection;
                                     return await HandleTransportAsync(frame, context);
                                 }
 
-                                int availableLength = Math.Min(requestedLength, firmware.BinaryData.Length - requestedOffset);
-                                byte[] chunkData = new byte[availableLength];
-                                Array.Copy(firmware.BinaryData, requestedOffset, chunkData, 0, availableLength);
+                                if (chunkData.Length == 0)
+                                {
+                                    _logger.LogError("[FOTA Stream] Read 0 bytes. Offset out of bounds or file corrupted.");
+                                    upgradeRequest.State = UpgradeState.Failed;
+                                    upgradeRequest.LastErrorMessage = "Read zero bytes from disk.";
+                                    await db.SaveChangesAsync();
 
-                                upgradeRequest.CurrentOffset = requestedOffset + availableLength;
+                                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                    return await HandleTransportAsync(frame, context);
+                                }
+
+                                // به‌روزرسانی وضعیت در دیتابیس
+                                upgradeRequest.CurrentOffset = requestedOffset + chunkData.Length;
                                 upgradeRequest.State = (upgradeRequest.CurrentOffset >= upgradeRequest.FileSize)
                                     ? UpgradeState.WaitingForStatus
                                     : UpgradeState.DataTransferring;
@@ -302,24 +325,25 @@ namespace WaterMeterServer.Application.Dispatchers
                                 upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
                                 await db.SaveChangesAsync();
 
+                                // ساخت و ارسال فریم 4307H با چانک خوانده‌شده
                                 return _protocolBuilder.BuildFirmwareChunkResponse(
                                     context.SessionId,
                                     frame.Mid,
                                     nextFrameNo,
-                                    ++context.SequenceNumber,
+                                    incomingReqSeq,
                                     requestedOffset,
                                     chunkData
                                 );
                             }
-
-                            // Handle potential interim failure reported by meter
+                            
+                            // چک کردن گزارش خطای احتمالی توسط کنتور
                             if (TryFindObjectInPayload(frame.DecryptedData, payloadOffset, FirmwareObjectIds.UpgradeStatus, out byte[] interimStatus))
                             {
-                                byte failStatus = interimStatus[0];
-                                _logger.LogWarning("[FOTA] Meter reported an interim upgrade failure: {Status}", failStatus);
+                                byte failCode = interimStatus[0];
+                                _logger.LogWarning("[FOTA] Meter reported error state during transfer: 0x{Code:X2}", failCode);
 
                                 upgradeRequest.State = UpgradeState.Failed;
-                                upgradeRequest.LastErrorMessage = $"Interim failure reported: Code {failStatus}";
+                                upgradeRequest.LastErrorMessage = $"Interim failure reported by terminal: 0x{failCode:X2}";
                                 await db.SaveChangesAsync();
 
                                 context.CurrentState = ConnectionContext.TransportState.EndConnection;
@@ -331,17 +355,19 @@ namespace WaterMeterServer.Application.Dispatchers
 
                     case UpgradeState.WaitingForStatus:
                         {
-                            // Step 4: Validate final installation confirmation (4304H) [cite: 216]
-                            _logger.LogInformation("[FOTA] Step 4: Parsing final status (4304H) from Meter: {MeterId}", context.MeterId);
+                            // Step 4: دریافت وضعیت نهایی نصب فریم‌ور (4304H) و بستن فرایند
+                            _logger.LogInformation("[FOTA] Step 4: Verifying Final Installation Status (4304H) from Meter: {MeterId}", context.MeterId);
 
                             if (!TryFindObjectInPayload(frame.DecryptedData, payloadOffset, FirmwareObjectIds.UpgradeStatus, out byte[] finalStatusPayload))
                             {
-                                _logger.LogWarning("[FOTA] Waiting for final status frame (4304H) to arrive...");
+                                _logger.LogWarning("[FOTA] Waiting for terminal to send final status frame (4304H)...");
                                 return null;
                             }
 
                             byte finalStatus = finalStatusPayload[0];
-                            _logger.LogInformation("[FOTA] Final Upgrade Status received: {Status}", finalStatus);
+                            ushort incomingReqSeq = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(2, 2));
+
+                            _logger.LogInformation("[FOTA] Final Status Code Received: 0x{Status:X2}", finalStatus);
 
                             var log = new FirmwareUpgradeLog
                             {
@@ -353,12 +379,13 @@ namespace WaterMeterServer.Application.Dispatchers
                                 FirmwareVersionId = 1
                             };
 
-                            if (finalStatus == 3 || finalStatus == 5)
+                            // طبق مستندات کد status == 0x03 یا 0x05 نشان‌دهنده نصب موفق فریم‌ور است
+                            if (finalStatus == 0x03 || finalStatus == 0x05 || finalStatus == 0x00)
                             {
                                 upgradeRequest.State = UpgradeState.Completed;
                                 log.Status = FirmwareUpgradeStatus.Completed;
                                 log.IsSuccess = true;
-                                log.Description = $"Upgrade successful. Final status: {finalStatus}";
+                                log.Description = $"Firmware update succeeded. Final status: 0x{finalStatus:X2}";
 
                                 if (context.Device != null)
                                 {
@@ -368,19 +395,27 @@ namespace WaterMeterServer.Application.Dispatchers
                             else
                             {
                                 upgradeRequest.State = UpgradeState.Failed;
-                                upgradeRequest.LastErrorMessage = $"Upgrade failed with status code: {finalStatus}";
+                                upgradeRequest.LastErrorMessage = $"Upgrade failed at device side. Status code: 0x{finalStatus:X2}";
 
                                 log.Status = FirmwareUpgradeStatus.Failed;
                                 log.IsSuccess = false;
                                 log.ErrorMessage = upgradeRequest.LastErrorMessage;
-                                log.Description = $"Failed code reported: {finalStatus}";
+                                log.Description = $"Failure status code: 0x{finalStatus:X2}";
                             }
 
                             await db.FirmwareUpgradeLogs.AddAsync(log);
                             await db.SaveChangesAsync();
 
                             context.CurrentState = ConnectionContext.TransportState.EndConnection;
-                            return _protocolBuilder.BuildUpgradeStatusResponse(context.SessionId, frame.Mid, nextFrameNo, ++context.SequenceNumber, 0x01);
+
+                            // پاسخ تاییدیه نهایی سرور به کنتور
+                            return _protocolBuilder.BuildUpgradeStatusResponse(
+                                context.SessionId,
+                                frame.Mid,
+                                nextFrameNo,
+                                incomingReqSeq,
+                                0x01 // Ack
+                            );
                         }
 
                     default:
@@ -389,7 +424,6 @@ namespace WaterMeterServer.Application.Dispatchers
                 }
             }
         }
-
         private async Task<byte[]?> SendPendingCommands(MeterFrame frame, ConnectionContext context)
         {
             byte[]? result = null;
@@ -1093,7 +1127,6 @@ namespace WaterMeterServer.Application.Dispatchers
                 _logger.LogError(ex, "Critical error parsing multi-object packet for Mid {Mid}", frame.Mid);
             }
         }
-
         private bool TryFindObjectInPayload(byte[] decryptedData, int startOffset, ushort targetObjectId, out byte[] objectContent)
         {
             objectContent = Array.Empty<byte>();

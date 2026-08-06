@@ -177,22 +177,19 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
-        // درخواست شروع ارتقا (430CH)
         public byte[] BuildWriteFirmwareRequest(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string currentVersion, string targetVersion)
         {
-            // 9FD1A793 0001 000C 02 0000 01 430C 01 02605302 02605301
-            // 6001F438 0001 000C 02 0001 01 430C 01 02605303 02605302
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
-            WriteBigEndian(ms, (ushort)0x000C); // Datalength
-            ms.WriteByte(0x02); // Function code
+            WriteBigEndian(ms, (ushort)0x000C); // Length after REQID
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
             WriteBigEndian(ms, requestNumber);
 
-            ms.WriteByte(0x01); // Num.Object
-            WriteBigEndian(ms, (ushort)0x430C); // Firmware upgrade request
+            ms.WriteByte(0x01); // Object Count
+            WriteBigEndian(ms, (ushort)0x430C); // Firmware upgrade request ID
 
-            ms.WriteByte(0x01); // Upgrade Flag
+            ms.WriteByte(0x01); // Upgrade Mode / Flag
 
             byte[] targetVersionBytes = Utils.StringToBcd(targetVersion.Replace("V", "").Replace(".", "").PadLeft(8, '0'));
             byte[] currentVersionBytes = Utils.StringToBcd(currentVersion.Replace("V", "").Replace(".", "").PadLeft(8, '0'));
@@ -203,15 +200,13 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
-        // ارسال اطلاعات توصیفی فریمور (4305H)
         public byte[] BuildFirmwareInfo(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string targetVersion, int fileSize, uint fileCrc32)
         {
-            // 9FD1A793 0002 000F 02 0000 01 4305 02605302 00000F00 EE2FCC70
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
-            WriteBigEndian(ms, (ushort)0x000F); // Datalength
-            ms.WriteByte(0x02); // Function Code
+            WriteBigEndian(ms, (ushort)0x000F); // Length after REQID
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
             WriteBigEndian(ms, requestNumber);
 
             ms.WriteByte(0x01);
@@ -231,17 +226,16 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
-        // ارسال پکت دیتا قطعات باینری (4307H)
         public byte[] BuildFirmwareChunkResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, int currentOffset, byte[] chunkData)
         {
-            // 9FD1A793 0003 010D 02 0000 01 4307 00000000 00000100 AAAAAAAAA026......0FE00FE0 276A
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
+            // 1B Function + 2B ReqNumber + 1B ObjCount + 2B ObjID + 4B Offset + 4B ChunkLen + Data + 2B CRC16
             ushort dataLen = (ushort)(13 + chunkData.Length);
             WriteBigEndian(ms, dataLen);
 
-            ms.WriteByte(0x02);
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
             WriteBigEndian(ms, requestNumber);
             ms.WriteByte(0x01);
             WriteBigEndian(ms, (ushort)0x4307);
@@ -254,9 +248,11 @@ namespace WaterMeterServer.Protocol
             BinaryPrimitives.WriteInt32BigEndian(lenBytes, chunkData.Length);
             ms.Write(lenBytes);
 
+            // کپی کردن محتوای باینری
             ms.Write(chunkData, 0, chunkData.Length);
 
-            ushort chunkCrc16 = Utils.CalculateCrc16(chunkData);
+            // محاسبه CRC16 مربوط به خود چانک داده باینری
+            ushort chunkCrc16 = Crc16.Calculate(chunkData);
             byte[] crc16Bytes = new byte[2];
             BinaryPrimitives.WriteUInt16BigEndian(crc16Bytes, chunkCrc16);
             ms.Write(crc16Bytes);
@@ -264,6 +260,21 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
+        public byte[] BuildUpgradeStatusResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status)
+        {
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
+
+            WriteBigEndian(ms, (ushort)0x0005); // Data length (1B Fun + 2B ReqNo + 1B Count + 2B ID + 1B Status)
+            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
+            WriteBigEndian(ms, requestNumber);
+
+            ms.WriteByte(0x01); // Number of objects
+            WriteBigEndian(ms, (ushort)0x4304); // Upgrade Status Object ID
+            ms.WriteByte(status); // Result Status (0x01 = ACK/Success)
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
 
         private byte[] WrapPacket(byte type, byte mid, byte ctrl, byte[] encryptedData)
         {
@@ -312,11 +323,6 @@ namespace WaterMeterServer.Protocol
             BinaryPrimitives.WriteUInt16BigEndian(buffer, value);
             ms.Write(buffer, 0, 2);
 
-        }
-
-        public byte[] BuildUpgradeStatusResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status)
-        {
-            throw new NotImplementedException();
         }
     }
 }
