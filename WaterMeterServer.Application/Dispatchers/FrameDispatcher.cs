@@ -92,19 +92,34 @@ namespace WaterMeterServer.Application.Dispatchers
                         _logger.LogInformation("Previous session cleared for Meter: {MeterId}", meterId);
                     }
 
-                    var sessionId = _sessionManager.GenerateSessionId(meterId);
-                    context.MeterId = meterId;
-                    context.SessionId = sessionId;
                     using (var scope = _scopeFactory.CreateScope())
                     {
                         var deviceRegistry = scope.ServiceProvider.GetRequiredService<IDeviceRegistry>();
-                        var device = await deviceRegistry.EnsureDeviceExistsAsync(meterId);
+                        var device = await deviceRegistry.GetDeviceAsync(meterId);
+                        if (device == null)
+                        {
+                            _logger.LogWarning("Handshake rejected for unregistered meter: {MeterId}", meterId);
+                            return _protocolBuilder.BuildHandshakeResponse(
+                                frame.Mid,
+                                0,
+                                frame.DecryptedData,
+                                ProtocolConstants.HandshakeFailure);
+                        }
+
+                        var sessionId = _sessionManager.GenerateSessionId(meterId);
+                        context.MeterId = meterId;
+                        context.SessionId = sessionId;
                         device.LastSessionId = sessionId;
                         device.LastSeenAt = Utils.DateTimeToInstant(DateTime.Now);
                         await deviceRegistry.UpdateDeviceAtivityAsync(device);
                         context.Device = device;
+
+                        return _protocolBuilder.BuildHandshakeResponse(
+                            frame.Mid,
+                            sessionId,
+                            frame.DecryptedData,
+                            ProtocolConstants.HandshakeSuccess);
                     }
-                    return _protocolBuilder.BuildHandshakeResponse(frame.Mid, sessionId, frame.DecryptedData, ProtocolConstants.HandshakeSuccess);
                 }
             }
 

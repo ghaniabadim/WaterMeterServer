@@ -17,33 +17,9 @@ namespace WaterMeterServer.Infrastructure.Persistence
             _logger = logger;
         }
 
-        public async Task<Device> EnsureDeviceExistsAsync(string meterId)
+        public Task<Device?> GetDeviceAsync(string meterId)
         {
-            var device = await _db.Devices.FirstOrDefaultAsync(d => d.SerialNumber == meterId);
-
-            if (device == null)
-            {
-                try
-                {
-                    device = new Device
-                    {
-                        SerialNumber = meterId,
-                    };
-
-                    _db.Devices.Add(device);
-                    await _db.SaveChangesAsync();
-                    _logger.LogInformation("New device registered: {SerialNumber}", meterId);
-                }
-                catch (DbUpdateException)
-                {
-                    _db.Entry(device!).State = EntityState.Detached;
-                    device = await _db.Devices.AsNoTracking()
-                     .FirstOrDefaultAsync(d => d.SerialNumber == meterId);
-                    if (device == null) throw;
-                }
-            }
-
-            return device!;
+            return _db.Devices.FirstOrDefaultAsync(d => d.SerialNumber == meterId);
         }
 
         public async Task UpdateDeviceAtivityAsync(Device device)

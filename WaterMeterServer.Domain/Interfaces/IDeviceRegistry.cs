@@ -7,7 +7,7 @@ namespace WaterMeterServer.Domain.Interfaces
 {
     public interface IDeviceRegistry
     {
-        Task<Device> EnsureDeviceExistsAsync(string meterId);
+        Task<Device?> GetDeviceAsync(string meterId);
         Task UpdateDeviceAtivityAsync(Device device);
     }
 }

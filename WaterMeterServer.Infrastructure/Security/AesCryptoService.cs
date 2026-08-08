@@ -6,9 +6,23 @@ namespace WaterMeterServer.Infrastructure.Security
 {
     public class AesCryptoService : ICryptoService
     {
-        private byte[] _key = Convert.FromHexString("676F6C64636172643030323530323533");
+        private byte[] _key = Array.Empty<byte>();
 
-        public void SetPrivateKey(string hexKey) => _key = Convert.FromHexString(hexKey);
+        public AesCryptoService(string hexKey)
+        {
+            SetPrivateKey(hexKey);
+        }
+
+        public void SetPrivateKey(string hexKey)
+        {
+            var key = Convert.FromHexString(hexKey);
+            if (key.Length is not (16 or 24 or 32))
+            {
+                throw new ArgumentException("The AES key must contain 16, 24, or 32 bytes.", nameof(hexKey));
+            }
+
+            _key = key;
+        }
 
         public byte[] Decrypt(in ReadOnlySequence<byte> data)
         {

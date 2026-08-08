@@ -8,7 +8,13 @@ namespace WaterMeterServer.Infrastructure.Logging
 {
     public class LogQueue
     {
-        private readonly Channel<CommunicationLog> _channel = Channel.CreateUnbounded<CommunicationLog>();
+        private const int Capacity = 10_000;
+        private readonly Channel<CommunicationLog> _channel = Channel.CreateBounded<CommunicationLog>(
+            new BoundedChannelOptions(Capacity)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true
+            });
         public ChannelWriter<CommunicationLog> Writer => _channel.Writer;
         public ChannelReader<CommunicationLog> Reader => _channel.Reader;
     }

@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using WaterMeterServer.Infrastructure.Logging;
 using WaterMeterServer.Infrastructure.Persistence;
 
@@ -12,12 +13,17 @@ namespace WaterMeterServer.Application.BackgroundWorkers
     {
         private readonly LogQueue _logQueue;
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly ILogger<CommunicationLogWorker> _logger;
         private DateTime _lastCleanupTime = DateTime.MinValue;
 
-        public CommunicationLogWorker(LogQueue logQueue, IServiceScopeFactory scopeFactory)
+        public CommunicationLogWorker(
+            LogQueue logQueue,
+            IServiceScopeFactory scopeFactory,
+            ILogger<CommunicationLogWorker> logger)
         {
             _logQueue = logQueue;
             _scopeFactory = scopeFactory;
+            _logger = logger;
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -36,7 +42,10 @@ namespace WaterMeterServer.Application.BackgroundWorkers
                             db.CommunicationLogs.Add(log);
                             await db.SaveChangesAsync(stoppingToken);
                         }
-                        catch (Exception ex) { /* Log error */ }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "Unable to persist communication log.");
+                        }
                     }
                 }
 
@@ -65,7 +74,7 @@ namespace WaterMeterServer.Application.BackgroundWorkers
             }
             catch (Exception ex)
             {
-                // Log cleanup error
+                _logger.LogError(ex, "Unable to clean up expired communication logs.");
             }
         }
     }

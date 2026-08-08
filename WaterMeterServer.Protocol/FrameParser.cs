@@ -1,6 +1,6 @@
 ﻿using System.Buffers;
 using System.Buffers.Binary;
-using System.Runtime.Intrinsics.Arm;
+using System.Security.Cryptography;
 using WaterMeterServer.Domain.Constants;
 using WaterMeterServer.Domain.Interfaces;
 
@@ -8,6 +8,8 @@ namespace WaterMeterServer.Protocol
 {
     public sealed class FrameParser
     {
+        private const int MinimumFrameLength = 10;
+        private const int MaximumFrameLength = 4_096;
         private readonly ICryptoService _cryptoService;
 
         public FrameParser(ICryptoService cryptoService) => _cryptoService = cryptoService;
@@ -26,10 +28,17 @@ namespace WaterMeterServer.Protocol
             }
             
             var startPos = reader.Position;
-            if (reader.Remaining < 10) return false; // حداقل طول فریم 
+            if (reader.Remaining < MinimumFrameLength) return false; // حداقل طول فریم
 
             reader.Advance(3); // عبور از Type و Version
-            if (!reader.TryReadBigEndian(out short totalLen)) return false;
+            if (!reader.TryReadBigEndian(out short rawLength)) return false;
+
+            int totalLen = unchecked((ushort)rawLength);
+            if (totalLen < MinimumFrameLength || totalLen > MaximumFrameLength)
+            {
+                buffer = buffer.Slice(buffer.GetPosition(1, startPos));
+                return false;
+            }
 
             if (buffer.Length < totalLen) return false; // فریم هنوز کامل نشده است
 
@@ -53,8 +62,23 @@ namespace WaterMeterServer.Protocol
             }
 
             // ۴. دکریپت کردن بخش داده (Data Domain) 
-            var encryptedPayload = frameSeq.Slice(7, totalLen - 10);
-            byte[] decryptedData = _cryptoService.Decrypt(encryptedPayload);
+            var encryptedPayload = frameSeq.Slice(7, totalLen - MinimumFrameLength);
+            if (encryptedPayload.Length == 0 || encryptedPayload.Length % 16 != 0)
+            {
+                buffer = buffer.Slice(frameSeq.End);
+                return false;
+            }
+
+            byte[] decryptedData;
+            try
+            {
+                decryptedData = _cryptoService.Decrypt(encryptedPayload);
+            }
+            catch (CryptographicException)
+            {
+                buffer = buffer.Slice(frameSeq.End);
+                return false;
+            }
 
             
 
@@ -67,7 +91,16 @@ namespace WaterMeterServer.Protocol
                 decryptedData: decryptedData
             );
 
-            if(frame.Type == ProtocolConstants.TypeTransport) frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0,4));
+            if (frame.Type == ProtocolConstants.TypeTransport)
+            {
+                if (decryptedData.Length < 11)
+                {
+                    buffer = buffer.Slice(frameSeq.End);
+                    return false;
+                }
+
+                frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0, 4));
+            }
             
             data = frameSeq.ToArray();
             buffer = buffer.Slice(frameSeq.End);

@@ -17,17 +17,36 @@ namespace WorkerService
         public static async Task Main(string[] args)
         {
             var builder = Host.CreateApplicationBuilder(args);
+            var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                throw new InvalidOperationException(
+                    "ConnectionStrings__DefaultConnection must be configured through a secure deployment secret.");
+            }
+
+            var aesKey = builder.Configuration["Protocol:AesKey"];
+            if (string.IsNullOrWhiteSpace(aesKey))
+            {
+                throw new InvalidOperationException(
+                    "Protocol__AesKey must be configured through a secure deployment secret.");
+            }
+
+            var tcpPort = builder.Configuration.GetValue<int?>("TcpServer:Port") ?? 502;
+            if (tcpPort is < 1 or > 65535)
+            {
+                throw new InvalidOperationException("TcpServer:Port must be between 1 and 65535.");
+            }
 
             // 1. تنظیمات دیتابیس (اتصال لوکال به پورت فوروارد شده SSH)
             builder.Services.AddDbContext<WaterMeterDbContext>(options =>
                 options.UseNpgsql(
-                builder.Configuration.GetConnectionString("DefaultConnection"),
+                connectionString,
                 o => o.UseNodaTime()));
 
             builder.Services.AddScoped<IDeviceRegistry, DeviceRegistry>();
 
             // 2. سرویس‌های یکتای لایه زیرساخت (Thread-Safe برای ۵۰۰۰ دستگاه)
-            builder.Services.AddSingleton<ICryptoService, AesCryptoService>();
+            builder.Services.AddSingleton<ICryptoService>(_ => new AesCryptoService(aesKey));
             builder.Services.AddSingleton<ISessionManager, SessionManager>();
             builder.Services.AddSingleton<ITelemetryBuffer, TelemetryBuffer>();
             builder.Services.AddSingleton<ICommandStore, CommandStore>();
@@ -42,7 +61,7 @@ namespace WorkerService
             // 5. ایجاد مستقیم سرور سوکت روی پورت ۸۰۸۰
             builder.Services.AddSingleton(sp =>
                 new TcpServer(
-                    502,
+                    tcpPort,
                     sp.GetRequiredService<FrameParser>(),
                     sp.GetRequiredService<FrameDispatcher>(),
                     sp.GetRequiredService<ILogger<TcpServer>>(),
@@ -70,6 +89,7 @@ namespace WorkerService
                 {
                     var logger = services.GetRequiredService<ILogger<Program>>();
                     logger.LogError(ex, "An error occurred while creating the database.");
+                    throw;
                 }
             }
 
