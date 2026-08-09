@@ -28,5 +28,16 @@ namespace WaterMeterServer.Domain.Models
         public DateTime LastActivity { get; set; } = DateTime.UtcNow;
         public Device Device { get; set; }
         public ushort SequenceNumber { get; set; }
+        public ushort ServerFrameNumber { get; private set; }
+
+        public ushort NextServerFrameNumber()
+        {
+            if (ServerFrameNumber == ushort.MaxValue)
+            {
+                throw new InvalidOperationException("Server frame number exhausted; a new session handshake is required.");
+            }
+
+            return ++ServerFrameNumber;
+        }
     }
 }

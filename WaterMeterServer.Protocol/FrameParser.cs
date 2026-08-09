@@ -100,6 +100,7 @@ namespace WaterMeterServer.Protocol
                 }
 
                 frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0, 4));
+                frame.FrameNo = BinaryPrimitives.ReadUInt16BigEndian(decryptedData.AsSpan(4, 2));
             }
             
             data = frameSeq.ToArray();

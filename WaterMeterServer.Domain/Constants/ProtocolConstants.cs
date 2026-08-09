@@ -18,6 +18,7 @@
         public const byte ControlEndFrame =         0x05;
 
         public const byte FunCodeEndCommunication = 0x02;
+        public const byte FunCodeDataDistribution = 0x02;
         public const byte FunCodeResume =           0x03;
 
         public const byte FunCodeReadData =         0x04;

@@ -6,6 +6,7 @@ using WaterMeterServer.Infrastructure.Buffering;
 using WaterMeterServer.Infrastructure.Logging;
 using WaterMeterServer.Infrastructure.Persistence;
 using WaterMeterServer.Infrastructure.Security;
+using WaterMeterServer.Infrastructure.Services;
 using WaterMeterServer.Infrastructure.Stores;
 using WaterMeterServer.Networking;
 using WaterMeterServer.Protocol;
@@ -44,6 +45,7 @@ namespace WorkerService
                 o => o.UseNodaTime()));
 
             builder.Services.AddScoped<IDeviceRegistry, DeviceRegistry>();
+            builder.Services.AddScoped<IFirmwareStorageService, PhysicalFirmwareStorageService>();
 
             // 2. سرویس‌های یکتای لایه زیرساخت (Thread-Safe برای ۵۰۰۰ دستگاه)
             builder.Services.AddSingleton<ICryptoService>(_ => new AesCryptoService(aesKey));

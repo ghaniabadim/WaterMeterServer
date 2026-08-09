@@ -7,5 +7,7 @@
         public const ushort Segmentation = 0x4306;    // پارامترهای قطعه‌بندی (Offset) 
         public const ushort DataStructure = 0x4307;  // ساختار داده‌های فریمور (Binary Data) 
         public const ushort UpgradeStatus = 0x4304;   // وضعیت نهایی ارتقا 
+        public const ushort UpgradeStatusAcknowledgement = 0x430E;
+        public const ushort ForceStop = 0xB03C;
     }
 }

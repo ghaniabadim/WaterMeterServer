@@ -1,5 +1,4 @@
 ﻿using System.Buffers.Binary;
-using System.Globalization;
 using System.Text;
 using WaterMeterServer.Domain.Constants;
 using WaterMeterServer.Domain.Entities;
@@ -72,17 +71,11 @@ namespace WaterMeterServer.Protocol
             BinaryPrimitives.WriteUInt16BigEndian(business.AsSpan(offset), 0x21B8); offset += 2; // Object ID: System Clock 
 
             // درج زمان سیستم به صورت BCD برای هماهنگ‌سازی کنتور
-            DateTime now = DateTime.Now;
+            DateTime now = DateTime.UtcNow;
 
-            PersianCalendar pc = new PersianCalendar();
-
-            int year = pc.GetYear(now);
-            int month = pc.GetMonth(now);
-            int day = pc.GetDayOfMonth(now);
-
-            business[offset++] = Utils.ByteToBcd(year % 100);
-            business[offset++] = Utils.ByteToBcd(month);
-            business[offset++] = Utils.ByteToBcd(day);
+            business[offset++] = Utils.ByteToBcd(now.Year % 100);
+            business[offset++] = Utils.ByteToBcd(now.Month);
+            business[offset++] = Utils.ByteToBcd(now.Day);
             business[offset++] = Utils.ByteToBcd(now.Hour);
             business[offset++] = Utils.ByteToBcd(now.Minute);
             business[offset++] = Utils.ByteToBcd(now.Second);
@@ -183,7 +176,7 @@ namespace WaterMeterServer.Protocol
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
             WriteBigEndian(ms, (ushort)0x000C); // Length after REQID
-            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
+            ms.WriteByte(ProtocolConstants.FunCodeDataDistribution);
             WriteBigEndian(ms, requestNumber);
 
             ms.WriteByte(0x01); // Object Count
@@ -206,7 +199,7 @@ namespace WaterMeterServer.Protocol
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
             WriteBigEndian(ms, (ushort)0x000F); // Length after REQID
-            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
+            ms.WriteByte(ProtocolConstants.FunCodeDataDistribution);
             WriteBigEndian(ms, requestNumber);
 
             ms.WriteByte(0x01);
@@ -235,7 +228,7 @@ namespace WaterMeterServer.Protocol
             ushort dataLen = (ushort)(13 + chunkData.Length);
             WriteBigEndian(ms, dataLen);
 
-            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
+            ms.WriteByte(ProtocolConstants.FunCodeDataDistribution);
             WriteBigEndian(ms, requestNumber);
             ms.WriteByte(0x01);
             WriteBigEndian(ms, (ushort)0x4307);
@@ -260,18 +253,18 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
-        public byte[] BuildUpgradeStatusResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status)
+        public byte[] BuildUpgradeStatusAcknowledgement(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber)
         {
             using var ms = new MemoryStream();
             WriteStandardHeader(ms, sessionId ?? 0, frameNumber);
 
-            WriteBigEndian(ms, (ushort)0x0005); // Data length (1B Fun + 2B ReqNo + 1B Count + 2B ID + 1B Status)
-            ms.WriteByte(ProtocolConstants.FunCodeWriteData); // 0x02
+            WriteBigEndian(ms, (ushort)0x0004);
+            ms.WriteByte(ProtocolConstants.FunCodeDataDistribution);
             WriteBigEndian(ms, requestNumber);
 
-            ms.WriteByte(0x01); // Number of objects
-            WriteBigEndian(ms, (ushort)0x4304); // Upgrade Status Object ID
-            ms.WriteByte(status); // Result Status (0x01 = ACK/Success)
+            ms.WriteByte(0x01);
+            WriteBigEndian(ms, FirmwareObjectIds.UpgradeStatusAcknowledgement);
+            ms.WriteByte(0x01);
 
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }

@@ -26,7 +26,7 @@ namespace WaterMeterServer.Domain.Interfaces
         public byte[] BuildWriteFirmwareRequest(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string currentVersion, string targetVersion);
         public byte[] BuildFirmwareInfo(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, string targetVersion, int fileSize, uint fileCrc32);
         public byte[] BuildFirmwareChunkResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, int currentOffset, byte[] chunkData);
-        public byte[] BuildUpgradeStatusResponse(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte status);
+        public byte[] BuildUpgradeStatusAcknowledgement(uint? sessionId, byte mid, ushort frameNumber, ushort requestNumber);
 
     }
 }
