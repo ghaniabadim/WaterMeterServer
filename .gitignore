@@ -92,3 +92,14 @@ msbuild.wrn
 
 # Visual Studio 2015
 .vs/
+
+# Local FOTA test and accidental CMD artifacts
+/.tmp/
+/test-firmware.bin
+/$env
+/--chunk-size
+/--host
+/--meter-id
+/--port
+/--scenario
+/dotnet

@@ -19,6 +19,30 @@ namespace WaterMeterServer.FotaSimulator
         public int TimeoutSeconds { get; private set; } = 120;
         public SimulationScenario Scenario { get; private set; } = SimulationScenario.Success;
 
+        public static SimulatorOptions Create(
+            string host,
+            int port,
+            string meterId,
+            string aesKey,
+            int chunkSize,
+            int timeoutSeconds,
+            SimulationScenario scenario)
+        {
+            var options = new SimulatorOptions
+            {
+                Host = host,
+                Port = port,
+                MeterId = meterId,
+                AesKey = aesKey,
+                ChunkSize = chunkSize,
+                TimeoutSeconds = timeoutSeconds,
+                Scenario = scenario
+            };
+
+            Validate(options);
+            return options;
+        }
+
         public static SimulatorOptions Parse(string[] args)
         {
             var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -51,6 +75,17 @@ namespace WaterMeterServer.FotaSimulator
                 Scenario = ParseScenario(Get(values, "scenario"))
             };
 
+            Validate(options);
+            return options;
+        }
+
+        private static void Validate(SimulatorOptions options)
+        {
+            if (string.IsNullOrWhiteSpace(options.Host))
+            {
+                throw new ArgumentException("Host is required.", nameof(options.Host));
+            }
+
             if (string.IsNullOrWhiteSpace(options.MeterId) ||
                 options.MeterId.Length > 34 ||
                 options.MeterId.Length % 2 != 0 ||
@@ -82,8 +117,6 @@ namespace WaterMeterServer.FotaSimulator
             {
                 throw new ArgumentOutOfRangeException(nameof(options.TimeoutSeconds));
             }
-
-            return options;
         }
 
         private static string? Get(Dictionary<string, string> values, string key)

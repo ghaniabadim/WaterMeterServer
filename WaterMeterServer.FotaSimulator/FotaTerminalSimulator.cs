@@ -11,20 +11,25 @@ namespace WaterMeterServer.FotaSimulator
     {
         private readonly SimulatorOptions _options;
         private readonly AesCryptoService _crypto;
+        private readonly Action<string> _log;
         private byte _mid;
         private ushort _terminalFrameNumber;
         private uint _sessionId;
 
-        public FotaTerminalSimulator(SimulatorOptions options)
+        public FotaTerminalSimulator(
+            SimulatorOptions options,
+            Action<string>? log = null)
         {
             _options = options;
             _crypto = new AesCryptoService(options.AesKey);
+            _log = log ?? Console.WriteLine;
         }
 
-        public async Task RunAsync()
+        public async Task RunAsync(CancellationToken cancellationToken = default)
         {
-            using var timeout = new CancellationTokenSource(
-                TimeSpan.FromSeconds(_options.TimeoutSeconds));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
 
             try
             {
@@ -44,7 +49,9 @@ namespace WaterMeterServer.FotaSimulator
                 await RunTransferAsync(timeout.Token);
                 await ReportInstallationResultAsync(0x05, timeout.Token);
             }
-            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                timeout.IsCancellationRequested &&
+                !cancellationToken.IsCancellationRequested)
             {
                 throw new TimeoutException(
                     $"FOTA simulation exceeded the {_options.TimeoutSeconds}-second timeout.");
@@ -68,7 +75,7 @@ namespace WaterMeterServer.FotaSimulator
                 FirmwareObjectIds.UpgradeRequest);
             EnsureLength(upgradeRequest, 9, FirmwareObjectIds.UpgradeRequest);
 
-            Console.WriteLine(
+            _log(
                 $"430C received. Target={Convert.ToHexString(upgradeRequest.AsSpan(1, 4))}, Current={Convert.ToHexString(upgradeRequest.AsSpan(5, 4))}");
 
             byte acceptanceStatus = _options.Scenario == SimulationScenario.Resume
@@ -95,7 +102,7 @@ namespace WaterMeterServer.FotaSimulator
                 firmwareInfo.AsSpan(4, 4)));
             uint firmwareCrc32 = BinaryPrimitives.ReadUInt32BigEndian(
                 firmwareInfo.AsSpan(8, 4));
-            Console.WriteLine(
+            _log(
                 $"4305 received. Size={firmwareSize}, CRC32=0x{firmwareCrc32:X8}");
 
             int offset = 0;
@@ -116,12 +123,12 @@ namespace WaterMeterServer.FotaSimulator
                     FirmwareObjectIds.DataStructure);
                 ValidateChunk(chunkObject, offset, requestedLength);
 
-                Console.WriteLine($"4307 received. Offset={offset}, Length={requestedLength}");
+                _log($"4307 received. Offset={offset}, Length={requestedLength}");
 
                 if (_options.Scenario == SimulationScenario.CrcRetry && !retriedFirstChunk)
                 {
                     retriedFirstChunk = true;
-                    Console.WriteLine($"Retrying offset {offset} to simulate terminal CRC rejection.");
+                    _log($"Retrying offset {offset} to simulate terminal CRC rejection.");
                     continue;
                 }
 
@@ -140,7 +147,7 @@ namespace WaterMeterServer.FotaSimulator
             ReceivedFrame endFrame = await ReadFrameAsync(stream, cancellationToken);
             ValidateResponseMid(completedMid, endFrame);
             ValidateEndFrame(endFrame);
-            Console.WriteLine("Download complete status accepted; server issued End Frame.");
+            _log("Download complete status accepted; server issued End Frame.");
         }
 
         private async Task RunDownloadFailureAsync(CancellationToken cancellationToken)
@@ -169,7 +176,7 @@ namespace WaterMeterServer.FotaSimulator
             ReceivedFrame endFrame = await ReadFrameAsync(stream, cancellationToken);
             ValidateResponseMid(failureMid, endFrame);
             ValidateEndFrame(endFrame);
-            Console.WriteLine("Download failure status accepted; server issued End Frame.");
+            _log("Download failure status accepted; server issued End Frame.");
         }
 
         private async Task ReportInstallationResultAsync(
@@ -194,7 +201,7 @@ namespace WaterMeterServer.FotaSimulator
             ValidateEndFrame(endFrame);
 
             string result = status == 0x05 ? "installation success" : "installation failure";
-            Console.WriteLine($"Final {result} status accepted; simulation finished.");
+            _log($"Final {result} status accepted; simulation finished.");
         }
 
         private async Task<TcpClient> ConnectAndHandshakeAsync(
@@ -229,7 +236,7 @@ namespace WaterMeterServer.FotaSimulator
 
             _sessionId = BinaryPrimitives.ReadUInt32BigEndian(
                 response.Plaintext.AsSpan(22, 4));
-            Console.WriteLine($"Handshake accepted. Session=0x{_sessionId:X8}");
+            _log($"Handshake accepted. Session=0x{_sessionId:X8}");
             return client;
         }
 
