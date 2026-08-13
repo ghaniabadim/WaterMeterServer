@@ -76,12 +76,14 @@ public static class SmartCommandEndpoints
             if (definition is null)
                 return Results.BadRequest(new { message = "Object انتخاب‌شده در کاتالوگ وجود ندارد." });
 
-            if (operation == "write" && !definition.Modes.Split(',').Contains("write"))
-                return Results.BadRequest(new { message = "این Object برای نوشتن مجاز نیست." });
-            if (operation != "write" && !definition.Modes.Split(',').Contains(operation.StartsWith("read") ? "record" : operation))
-                return Results.BadRequest(new { message = "این Object برای این نوع خواندن مجاز نیست." });
-            if (operation == "read" && !definition.Modes.Split(',').Contains("read"))
-                return Results.BadRequest(new { message = "این Object برای خواندن مجاز نیست." });
+            var requiredMode = operation switch
+            {
+                "write" => "write",
+                "read" => "read",
+                _ => "record"
+            };
+            if (!definition.Modes.Split(',').Contains(requiredMode))
+                return Results.BadRequest(new { message = $"این Object برای عملیات {operation} مجاز نیست." });
 
             byte functionCode;
             byte[] payload;
