@@ -811,6 +811,14 @@ namespace WaterMeterServer.Application.Dispatchers
                                     db);
                                 break;
 
+                            case ProtocolConstants.FunCodeNegativeReadRecordsByTime:
+                            case ProtocolConstants.FunCodeNegativeReadRecentRecords:
+                                HandleNegativeRecordResponse(
+                                    frame.DecryptedData,
+                                    responseFunctionCode,
+                                    commandBatch);
+                                break;
+
                             default:
                                 foreach (var cmd in commandBatch)
                                 {
@@ -953,6 +961,45 @@ namespace WaterMeterServer.Application.Dispatchers
                 mainCmd.ExecutionResult = functionCode == 0x87
                     ? $"Record Read Success: Retrieved and stored {stored}/{recordCount} records starting from requested BCD timestamp."
                     : $"Recent Log Success: Stored {stored}/{recordCount} historical log data structures from flash.";
+            }
+        }
+
+        private static void HandleNegativeRecordResponse(
+            byte[] data,
+            byte responseFunctionCode,
+            List<DeviceCommandLog> batch)
+        {
+            ushort? rejectedObjectId = null;
+            byte? rejectionCode = null;
+
+            // Negative record response layout after SID/frame/data length:
+            // [Function][Request sequence][Object ID][Result code]
+            if (data.Length >= 14)
+            {
+                rejectedObjectId = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(11, 2));
+                rejectionCode = data[13];
+            }
+
+            string operation = responseFunctionCode == ProtocolConstants.FunCodeNegativeReadRecordsByTime
+                ? "Read by start time"
+                : "Read recent records";
+            string reason = rejectionCode switch
+            {
+                0x01 => "Terminal rejected the requested record range or start time.",
+                0x02 => "Terminal does not support the requested record object.",
+                0x03 => "Requested record count is outside the terminal limit.",
+                _ => rejectionCode.HasValue
+                    ? $"Terminal returned rejection code 0x{rejectionCode.Value:X2}."
+                    : "Terminal returned a negative record response without a result code."
+            };
+
+            foreach (var command in batch)
+            {
+                if (rejectedObjectId.HasValue && command.CommandId != rejectedObjectId.Value)
+                    continue;
+
+                command.Status = DeviceCommandStatus.Failed;
+                command.ExecutionResult = $"{operation} rejected. {reason}";
             }
         }
 

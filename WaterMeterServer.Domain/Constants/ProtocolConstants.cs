@@ -30,6 +30,8 @@
         public const byte FunCodeResponseWriteData = 0x85;
         public const byte FunCodeResponseReadRecordsByTime = 0x87;
         public const byte FunCodeResponseReadRecentRecords = 0x88;
+        public const byte FunCodeNegativeReadRecordsByTime = 0xC7;
+        public const byte FunCodeNegativeReadRecentRecords = 0xC8;
 
         // شناسه‌های اشیاء پرکاربرد طبق Appendix A
         public const ushort ObjId_RealTimeData = 0x70F2;
