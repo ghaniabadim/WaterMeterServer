@@ -53,6 +53,18 @@ namespace WorkerService
             var apiListen = builder.Configuration["Api:Listen"] ?? "http://127.0.0.1";
             builder.WebHost.UseUrls($"{apiListen}:{apiPort}");
             builder.Services.AddSingleton(new ApiKeyOptions(apiKey));
+            var allowedOrigins = builder.Configuration
+                .GetSection("Api:AllowedOrigins")
+                .Get<string[]>() ?? Array.Empty<string>();
+            if (allowedOrigins.Length == 0)
+                throw new InvalidOperationException("Api__AllowedOrigins__0 must be configured.");
+            builder.Services.AddCors(options =>
+            {
+                options.AddPolicy("WebClient", policy =>
+                    policy.WithOrigins(allowedOrigins)
+                        .AllowAnyHeader()
+                        .AllowAnyMethod());
+            });
 
             // 1. تنظیمات دیتابیس (اتصال لوکال به پورت فوروارد شده SSH)
             builder.Services.AddDbContext<WaterMeterDbContext>(options =>
@@ -95,9 +107,16 @@ namespace WorkerService
         
 
             var host = builder.Build();
+            host.UseCors("WebClient");
             host.Use(async (context, next) =>
             {
                 if (!context.Request.Path.StartsWithSegments("/api"))
+                {
+                    await next();
+                    return;
+                }
+
+                if (HttpMethods.IsOptions(context.Request.Method))
                 {
                     await next();
                     return;

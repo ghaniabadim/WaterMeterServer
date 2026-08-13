@@ -10,6 +10,7 @@ services:
       ConnectionStrings__DefaultConnection: ${CONNECTION_STRING:?Set CONNECTION_STRING in .env.server}
       Protocol__AesKey: ${PROTOCOL_AES_KEY:?Set PROTOCOL_AES_KEY in .env.server}
       Api__ApiKey: ${API_KEY:?Set API_KEY in .env.server}
+      Api__AllowedOrigins__0: ${API_ALLOWED_ORIGINS:?Set API_ALLOWED_ORIGINS in .env.server}
       Api__Listen: http://0.0.0.0
       Api__Port: ${API_PORT:-5080}
       TcpServer__Port: ${TCP_PORT:-502}
