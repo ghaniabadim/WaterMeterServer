@@ -29,6 +29,33 @@ namespace WaterMeterServer.Domain.Models
         public Device Device { get; set; }
         public ushort SequenceNumber { get; set; }
         public ushort ServerFrameNumber { get; private set; }
+        public byte? LastTerminalMid { get; private set; }
+        public ushort? LastTerminalFrameNumber { get; private set; }
+        public byte[]? LastResponse { get; set; }
+
+        public TerminalFrameDisposition AcceptTerminalFrame(byte mid, ushort frameNumber)
+        {
+            if (LastTerminalMid == mid &&
+                LastTerminalFrameNumber == frameNumber)
+            {
+                return TerminalFrameDisposition.Duplicate;
+            }
+
+            if (LastTerminalMid.HasValue && mid != LastTerminalMid.Value + 1)
+            {
+                return TerminalFrameDisposition.Invalid;
+            }
+
+            if (LastTerminalFrameNumber.HasValue &&
+                frameNumber <= LastTerminalFrameNumber.Value)
+            {
+                return TerminalFrameDisposition.Invalid;
+            }
+
+            LastTerminalMid = mid;
+            LastTerminalFrameNumber = frameNumber;
+            return TerminalFrameDisposition.New;
+        }
 
         public ushort NextServerFrameNumber()
         {
@@ -39,5 +66,12 @@ namespace WaterMeterServer.Domain.Models
 
             return ++ServerFrameNumber;
         }
+    }
+
+    public enum TerminalFrameDisposition
+    {
+        New,
+        Duplicate,
+        Invalid
     }
 }

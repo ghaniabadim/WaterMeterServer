@@ -17,8 +17,8 @@
         public long DeviceId { get; set; }
         public Device Device { get; set; } = null!;
 
-        public long FirmwareVersionId { get; set; }
-        public FirmwareVersion FirmwareVersion { get; set; } = null!;
+        public long? FirmwareVersionId { get; set; }
+        public FirmwareVersion? FirmwareVersion { get; set; }
 
         public FirmwareUpgradeStatus Status { get; set; }
         public int LastOffsetSent { get; set; }

@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-watermeter}
+      POSTGRES_USER: ${POSTGRES_USER:-watermeter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  water-meter-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: water-meter-server:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-watermeter};Username=${POSTGRES_USER:-watermeter};Password=${POSTGRES_PASSWORD}
+      Protocol__AesKey: ${PROTOCOL_AES_KEY:?Set PROTOCOL_AES_KEY in .env}
+      Api__ApiKey: ${API_KEY:?Set API_KEY in .env}
+      Api__Listen: http://0.0.0.0
+      Api__Port: ${API_PORT:-5080}
+      TcpServer__Port: ${TCP_PORT:-502}
+      Firmware__RootPath: /var/lib/water-meter/firmware
+    ports:
+      - "${TCP_PORT:-502}:${TCP_PORT:-502}"
+      - "${API_PORT:-5080}:${API_PORT:-5080}"
+    volumes:
+      - firmware-data:/var/lib/water-meter/firmware
+
+volumes:
+  postgres-data:
+  firmware-data:

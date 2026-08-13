@@ -8,6 +8,11 @@ namespace WaterMeterServer.Domain.Entities
         Pending,
         Succeeded,
         Failed,
+        Timeout,
+        Disconnected,
+        Cancelled,
+        DuplicateResponse,
+        SequenceMismatch,
     };
     public class DeviceCommandLog
     {

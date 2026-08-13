@@ -15,9 +15,24 @@ namespace WaterMeterServer.Protocol
         public FrameParser(ICryptoService cryptoService) => _cryptoService = cryptoService;
 
         public bool TryParse(ref ReadOnlySequence<byte> buffer, out MeterFrame? frame, out byte[]? data)
+            => TryParse(ref buffer, out frame, out data, out _);
+
+        public bool TryParse(
+            ref ReadOnlySequence<byte> buffer,
+            out MeterFrame? frame,
+            out byte[]? data,
+            out string? failureReason)
         {
             frame = null;
             data = null;
+            failureReason = null;
+            string? rejectedReason = null;
+            byte[]? rejectedData = null;
+            void Reject(string reason, ReadOnlySequence<byte>? candidate = null)
+            {
+                rejectedReason = reason;
+                rejectedData = candidate?.ToArray();
+            }
             var reader = new SequenceReader<byte>(buffer);
 
             // ۱. جستجوی HEAD (0x68) 
@@ -36,6 +51,9 @@ namespace WaterMeterServer.Protocol
             int totalLen = unchecked((ushort)rawLength);
             if (totalLen < MinimumFrameLength || totalLen > MaximumFrameLength)
             {
+                Reject($"Invalid frame length: {totalLen}.");
+                failureReason = rejectedReason;
+                data = rejectedData;
                 buffer = buffer.Slice(buffer.GetPosition(1, startPos));
                 return false;
             }
@@ -44,9 +62,31 @@ namespace WaterMeterServer.Protocol
 
             var frameSeq = buffer.Slice(startPos, totalLen);
 
+            byte type = Utils.ReadByteAt(frameSeq, 1);
+            byte version = Utils.ReadByteAt(frameSeq, 2);
+            byte control = Utils.ReadByteAt(frameSeq, 6);
+            if (version != 0 ||
+                (type != ProtocolConstants.TypeTransport &&
+                 type != ProtocolConstants.TypeHandshake) ||
+                (type == ProtocolConstants.TypeHandshake && control != 0x01) ||
+                (type == ProtocolConstants.TypeTransport &&
+                 control is not (ProtocolConstants.ControlReporting
+                     or ProtocolConstants.ControlDistribution
+                     or ProtocolConstants.ControlEndFrame)))
+            {
+                Reject($"Invalid header fields. Type=0x{type:X2}, Version=0x{version:X2}, Control=0x{control:X2}.", frameSeq);
+                failureReason = rejectedReason;
+                data = rejectedData;
+                buffer = buffer.Slice(buffer.GetPosition(1, startPos));
+                return false;
+            }
+
             // ۲. بررسی انتهای فریم (0x16) 
             if (Utils.ReadByteAt(frameSeq, totalLen - 1) != ProtocolConstants.Tail)
             {
+                Reject("Invalid frame tail.", frameSeq);
+                failureReason = rejectedReason;
+                data = rejectedData;
                 buffer = buffer.Slice(buffer.GetPosition(1, startPos));
                 return false;
             }
@@ -57,6 +97,9 @@ namespace WaterMeterServer.Protocol
 
             if (receivedCrc != computedCrc)
             {
+                Reject($"CRC mismatch. Received=0x{receivedCrc:X4}, Computed=0x{computedCrc:X4}.", frameSeq);
+                failureReason = rejectedReason;
+                data = rejectedData;
                 buffer = buffer.Slice(buffer.GetPosition(1, startPos));
                 return false;
             }
@@ -65,6 +108,9 @@ namespace WaterMeterServer.Protocol
             var encryptedPayload = frameSeq.Slice(7, totalLen - MinimumFrameLength);
             if (encryptedPayload.Length == 0 || encryptedPayload.Length % 16 != 0)
             {
+                Reject("Encrypted payload length is invalid.", frameSeq);
+                failureReason = rejectedReason;
+                data = rejectedData;
                 buffer = buffer.Slice(frameSeq.End);
                 return false;
             }
@@ -76,29 +122,75 @@ namespace WaterMeterServer.Protocol
             }
             catch (CryptographicException)
             {
+                Reject("AES payload decryption failed.", frameSeq);
+                failureReason = rejectedReason;
+                data = rejectedData;
                 buffer = buffer.Slice(frameSeq.End);
                 return false;
             }
 
-            
-
-            frame = new MeterFrame(
-                type: Utils.ReadByteAt(frameSeq, 1),
-                version: Utils.ReadByteAt(frameSeq, 2),
-                length: (ushort)totalLen,
-                mid: Utils.ReadByteAt(frameSeq, 5),
-                control: Utils.ReadByteAt(frameSeq, 6),
-                decryptedData: decryptedData
-            );
-
-            if (frame.Type == ProtocolConstants.TypeTransport)
+            if (type == ProtocolConstants.TypeHandshake)
             {
-                if (decryptedData.Length < 11)
+                if (decryptedData.Length < 41)
                 {
+                    Reject("Handshake payload is too short.", frameSeq);
+                    failureReason = rejectedReason;
+                    data = rejectedData;
                     buffer = buffer.Slice(frameSeq.End);
                     return false;
                 }
 
+                int meterDigits = decryptedData[2];
+                int meterBytes = (meterDigits + 1) / 2;
+                if (decryptedData.Length < 3 + meterBytes ||
+                    meterDigits is < 1 or > 34)
+                {
+                    Reject("Handshake meter identifier length is invalid.", frameSeq);
+                    failureReason = rejectedReason;
+                    data = rejectedData;
+                    buffer = buffer.Slice(frameSeq.End);
+                    return false;
+                }
+            }
+            else
+            {
+                if (decryptedData.Length < 11)
+                {
+                    Reject("Transport payload is too short.", frameSeq);
+                    failureReason = rejectedReason;
+                    data = rejectedData;
+                    buffer = buffer.Slice(frameSeq.End);
+                    return false;
+                }
+
+                int dataLengthOffset = control == ProtocolConstants.ControlEndFrame ? 7 : 6;
+                ushort declaredDataLength =
+                    BinaryPrimitives.ReadUInt16BigEndian(
+                        decryptedData.AsSpan(dataLengthOffset, 2));
+                int actualDataLength = control == ProtocolConstants.ControlEndFrame
+                    ? decryptedData.Length - 12
+                    : decryptedData.Length - 11;
+                if (declaredDataLength != actualDataLength)
+                {
+                    Reject($"Transport payload length mismatch. Declared={declaredDataLength}, Actual={actualDataLength}.", frameSeq);
+                    failureReason = rejectedReason;
+                    data = rejectedData;
+                    buffer = buffer.Slice(frameSeq.End);
+                    return false;
+                }
+            }
+
+            frame = new MeterFrame(
+                type: type,
+                version: version,
+                length: (ushort)totalLen,
+                mid: Utils.ReadByteAt(frameSeq, 5),
+                control: control,
+                decryptedData: decryptedData
+            );
+
+            if (type == ProtocolConstants.TypeTransport)
+            {
                 frame.SessionId = (uint)BinaryPrimitives.ReadInt32BigEndian(decryptedData.AsSpan(0, 4));
                 frame.FrameNo = BinaryPrimitives.ReadUInt16BigEndian(decryptedData.AsSpan(4, 2));
             }

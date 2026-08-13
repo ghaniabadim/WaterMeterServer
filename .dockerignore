@@ -1,0 +1,13 @@
+.git
+.gitignore
+.vs
+.deploy
+.tmp
+**/bin
+**/obj
+**/TestResults
+*.user
+*.suo
+*.docx
+.env
+README*

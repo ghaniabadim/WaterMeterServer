@@ -4,7 +4,7 @@ using WaterMeterServer.Infrastructure.Persistence;
 
 namespace WaterMeterServer.Infrastructure.Logging
 {
-    public class SystemEventLogger
+    public sealed class SystemEventLogger
     {
         private readonly IServiceProvider _serviceProvider;
 

@@ -67,6 +67,53 @@ namespace WaterMeterServer.Protocol.Tests
         }
 
         [Fact]
+        public void FrameParser_ParsesOfficialEndFrame()
+        {
+            var crypto = new AesCryptoService(AesKey);
+            var parser = new FrameParser(crypto);
+            byte[] rawFrame = Convert.FromHexString(
+                "680400003A03053063050268248A4B73D2CD24F83F55834E929EEDA88AF8F235582BC8E42C8E06ABF31D22577BCC83AE8C64A776B9C87D670D16");
+            var buffer = new ReadOnlySequence<byte>(rawFrame);
+
+            bool parsed = parser.TryParse(ref buffer, out MeterFrame? frame, out _);
+
+            Assert.True(parsed);
+            Assert.NotNull(frame);
+            Assert.Equal(0x2DE9E43Du, frame.SessionId);
+            Assert.Equal((ushort)0x0002, frame.FrameNo);
+            Assert.Equal((byte)0x05, frame.ControlCode);
+            Assert.Equal((byte)0x00, frame.DecryptedData[6]);
+            Assert.Equal((ushort)0x21B8, BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(13, 2)));
+        }
+
+        [Fact]
+        public void FrameParser_RejectsUnsupportedTransportControl()
+        {
+            var crypto = new AesCryptoService(AesKey);
+            var parser = new FrameParser(crypto);
+            byte[] rawFrame = Convert.FromHexString(
+                "680400002A030111FD9AB856F2570A134F1B74E32857B4ABF31D22577BCC83AE8C64A776B9C87D4D7E16");
+            rawFrame[6] = 0x06;
+            var buffer = new ReadOnlySequence<byte>(rawFrame);
+
+            Assert.False(parser.TryParse(ref buffer, out _, out _));
+        }
+
+        [Fact]
+        public void FrameParser_RejectsBadTransportDataLength()
+        {
+            var crypto = new AesCryptoService(AesKey);
+            var parser = new FrameParser(crypto);
+            byte[] rawFrame = Convert.FromHexString(
+                "680400002A030111FD9AB856F2570A134F1B74E32857B4ABF31D22577BCC83AE8C64A776B9C87D4D7E16");
+            rawFrame[7 + 6] = 0x00;
+            rawFrame[7 + 7] = 0x01;
+            var buffer = new ReadOnlySequence<byte>(rawFrame);
+
+            Assert.False(parser.TryParse(ref buffer, out _, out _));
+        }
+
+        [Fact]
         public void ReportedObjectParser_ReadsFourByteUpgradeStatus()
         {
             byte[] plaintext = Convert.FromHexString(

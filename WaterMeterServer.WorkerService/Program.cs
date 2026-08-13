@@ -1,6 +1,11 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using System.Security.Cryptography;
 using WaterMeterServer.Application.BackgroundWorkers;
 using WaterMeterServer.Application.Dispatchers;
+using WaterMeterServer.Application.Services;
 using WaterMeterServer.Domain.Interfaces;
 using WaterMeterServer.Infrastructure.Buffering;
 using WaterMeterServer.Infrastructure.Logging;
@@ -10,6 +15,7 @@ using WaterMeterServer.Infrastructure.Services;
 using WaterMeterServer.Infrastructure.Stores;
 using WaterMeterServer.Networking;
 using WaterMeterServer.Protocol;
+using WorkerService.Api;
 
 namespace WorkerService
 {
@@ -17,7 +23,7 @@ namespace WorkerService
     {
         public static async Task Main(string[] args)
         {
-            var builder = Host.CreateApplicationBuilder(args);
+            var builder = WebApplication.CreateBuilder(args);
             var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
             if (string.IsNullOrWhiteSpace(connectionString))
             {
@@ -38,6 +44,16 @@ namespace WorkerService
                 throw new InvalidOperationException("TcpServer:Port must be between 1 and 65535.");
             }
 
+            var apiKey = builder.Configuration["Api:ApiKey"];
+            if (string.IsNullOrWhiteSpace(apiKey))
+                throw new InvalidOperationException("Api__ApiKey must be configured through a secure deployment secret.");
+            var apiPort = builder.Configuration.GetValue<int?>("Api:Port") ?? 5080;
+            if (apiPort is < 1 or > 65535)
+                throw new InvalidOperationException("Api:Port must be between 1 and 65535.");
+            var apiListen = builder.Configuration["Api:Listen"] ?? "http://127.0.0.1";
+            builder.WebHost.UseUrls($"{apiListen}:{apiPort}");
+            builder.Services.AddSingleton(new ApiKeyOptions(apiKey));
+
             // 1. تنظیمات دیتابیس (اتصال لوکال به پورت فوروارد شده SSH)
             builder.Services.AddDbContext<WaterMeterDbContext>(options =>
                 options.UseNpgsql(
@@ -51,7 +67,6 @@ namespace WorkerService
             builder.Services.AddSingleton<ICryptoService>(_ => new AesCryptoService(aesKey));
             builder.Services.AddSingleton<ISessionManager, SessionManager>();
             builder.Services.AddSingleton<ITelemetryBuffer, TelemetryBuffer>();
-            builder.Services.AddSingleton<ICommandStore, CommandStore>();
 
             // 3. سرویس‌های لایه پروتکل
             builder.Services.AddSingleton<FrameParser>();
@@ -60,6 +75,8 @@ namespace WorkerService
             // 4. سرویس‌های لایه اپلیکیشن
             builder.Services.AddSingleton<FrameDispatcher>();
             builder.Services.AddSingleton<LogQueue>();
+            builder.Services.AddSingleton<SystemEventLogger>();
+            builder.Services.AddSingleton<WaterUsageAggregationService>();
             // 5. ایجاد مستقیم سرور سوکت روی پورت ۸۰۸۰
             builder.Services.AddSingleton(sp =>
                 new TcpServer(
@@ -67,15 +84,37 @@ namespace WorkerService
                     sp.GetRequiredService<FrameParser>(),
                     sp.GetRequiredService<FrameDispatcher>(),
                     sp.GetRequiredService<ILogger<TcpServer>>(),
-                    sp.GetRequiredService< LogQueue>()));
+                    sp.GetRequiredService<LogQueue>(),
+                    sp.GetRequiredService<SystemEventLogger>()));
 
             // 6. پردازشگرهای پس‌زمینه (بدون تکرار و اورلپ)
             builder.Services.AddHostedService<ServerWorker>();
             builder.Services.AddHostedService<TelemetryBatchProcessor>();
             builder.Services.AddHostedService<CommunicationLogWorker>();
+            builder.Services.AddHostedService<CommandTimeoutWorker>();
         
 
             var host = builder.Build();
+            host.Use(async (context, next) =>
+            {
+                if (!context.Request.Path.StartsWithSegments("/api"))
+                {
+                    await next();
+                    return;
+                }
+
+                var options = context.RequestServices.GetRequiredService<ApiKeyOptions>();
+                if (!context.Request.Headers.TryGetValue("X-Api-Key", out var supplied) ||
+                    !CryptographicOperations.FixedTimeEquals(
+                        System.Text.Encoding.UTF8.GetBytes(supplied.ToString()),
+                        System.Text.Encoding.UTF8.GetBytes(options.Value)))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+                await next();
+            });
+            host.MapCommandRequestEndpoints();
 
             using (var scope = host.Services.CreateScope())
             {
@@ -96,7 +135,9 @@ namespace WorkerService
             }
 
 
-            host.Run();
+            await host.RunAsync();
         }
+
+        private sealed record ApiKeyOptions(string Value);
     }
 }

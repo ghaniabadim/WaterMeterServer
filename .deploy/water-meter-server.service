@@ -1,0 +1,21 @@
+[Unit]
+Description=Water Meter Server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=watermeter
+Group=watermeter
+WorkingDirectory=/opt/water-meter-server
+ExecStart=/opt/water-meter-server/WorkerService
+EnvironmentFile=/etc/water-meter-server.env
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+SyslogIdentifier=water-meter-server
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,20 +1,17 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using System;
-using System.Collections.Generic;
-using System.Text;
 using Microsoft.Extensions.Logging;
+using WaterMeterServer.Domain.Entities;
 using WaterMeterServer.Infrastructure.Logging;
 using WaterMeterServer.Infrastructure.Persistence;
 
 namespace WaterMeterServer.Application.BackgroundWorkers
 {
-    public class CommunicationLogWorker : BackgroundService
+    public sealed class CommunicationLogWorker : BackgroundService
     {
         private readonly LogQueue _logQueue;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<CommunicationLogWorker> _logger;
-        private DateTime _lastCleanupTime = DateTime.MinValue;
 
         public CommunicationLogWorker(
             LogQueue logQueue,
@@ -28,55 +25,105 @@ namespace WaterMeterServer.Application.BackgroundWorkers
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            while (!stoppingToken.IsCancellationRequested)
-            {
-                // ۱. پردازش لاگ‌های ورودی
-                if (await _logQueue.Reader.WaitToReadAsync(stoppingToken))
-                {
-                    while (_logQueue.Reader.TryRead(out var log))
-                    {
-                        try
-                        {
-                            using var scope = _scopeFactory.CreateScope();
-                            var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
-                            db.CommunicationLogs.Add(log);
-                            await db.SaveChangesAsync(stoppingToken);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Unable to persist communication log.");
-                        }
-                    }
-                }
+            using var timer = new PeriodicTimer(TimeSpan.FromHours(24));
+            var readTask = _logQueue.Reader.WaitToReadAsync(stoppingToken).AsTask();
+            var cleanupTask = timer.WaitForNextTickAsync(stoppingToken).AsTask();
 
-                // ۲. اجرای پاکسازی (مثلاً هر ۲۴ ساعت یک‌بار)
-                if (DateTime.UtcNow - _lastCleanupTime > TimeSpan.FromHours(24))
+            try
+            {
+                while (!stoppingToken.IsCancellationRequested)
                 {
-                    await PerformCleanupAsync();
-                    _lastCleanupTime = DateTime.UtcNow;
+                    var completed = await Task.WhenAny(readTask, cleanupTask);
+                    if (completed == cleanupTask)
+                    {
+                        if (await cleanupTask)
+                            await PerformCleanupAsync(stoppingToken);
+                        cleanupTask = timer.WaitForNextTickAsync(stoppingToken).AsTask();
+                        continue;
+                    }
+
+                    if (!await readTask)
+                        break;
+
+                    var batch = new List<CommunicationLog>(250);
+                    while (batch.Count < 250 && _logQueue.Reader.TryRead(out var log))
+                        batch.Add(log);
+                    if (batch.Count > 0)
+                        await PersistBatchAsync(batch, stoppingToken);
+
+                    readTask = _logQueue.Reader.WaitToReadAsync(stoppingToken).AsTask();
                 }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
             }
         }
 
-        private async Task PerformCleanupAsync()
+        private async Task PersistBatchAsync(List<CommunicationLog> batch, CancellationToken stoppingToken)
         {
             try
             {
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
+                await db.CommunicationLogs.AddRangeAsync(batch, stoppingToken);
+                await db.SaveChangesAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unable to persist communication log batch of {Count}.", batch.Count);
+                    await TryLogSystemEventAsync(
+                    WaterMeterServer.Domain.Entities.LogLevel.Error,
+                    "CommunicationLog",
+                    $"Persisting a batch of {batch.Count} communication logs failed.",
+                    ex,
+                    stoppingToken);
+            }
+        }
 
-                // حذف لاگ‌های قدیمی‌تر از ۳۰ روز
+        private async Task PerformCleanupAsync(CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
                 var threshold = DateTime.UtcNow.AddDays(-30);
                 var oldLogs = db.CommunicationLogs.Where(l => l.Timestamp < threshold);
-
                 db.CommunicationLogs.RemoveRange(oldLogs);
-                await db.SaveChangesAsync();
+                await db.SaveChangesAsync(stoppingToken);
+                _logger.LogInformation("Communication log cleanup completed.");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Unable to clean up expired communication logs.");
+                await TryLogSystemEventAsync(WaterMeterServer.Domain.Entities.LogLevel.Error, "CommunicationLog", "Cleanup failed.", ex, stoppingToken);
+            }
+        }
+
+        private async Task TryLogSystemEventAsync(
+            WaterMeterServer.Domain.Entities.LogLevel level,
+            string category,
+            string message,
+            Exception exception,
+            CancellationToken stoppingToken)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<WaterMeterDbContext>();
+                db.SystemEventLogs.Add(new SystemEventLog
+                {
+                    Level = level,
+                    Category = category,
+                    Message = message,
+                    ExceptionDetails = exception.ToString(),
+                    Timestamp = DateTime.UtcNow
+                });
+                await db.SaveChangesAsync(stoppingToken);
+            }
+            catch (Exception loggingException)
+            {
+                _logger.LogCritical(loggingException, "Unable to persist system event after logging failure.");
             }
         }
     }
-
 }

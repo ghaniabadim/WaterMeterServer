@@ -20,8 +20,13 @@ namespace WaterMeterServer.Infrastructure.Persistence
         public DbSet<FirmwareUpgradeRequest> FirmwareUpgradeRequests { get; set; }
         public DbSet<FirmwareVersion> FirmwareVersions { get; set; }
         public DbSet<FirmwareUpgradeLog> FirmwareUpgradeLogs { get; set; }
+        public DbSet<FirmwareChunkLog> FirmwareChunkLogs { get; set; }
         public DbSet<CommunicationLog> CommunicationLogs { get; set; }
         public DbSet<SystemEventLog> SystemEventLogs { get; set; }
+        public DbSet<WaterUsageRecord> WaterUsageRecords { get; set; }
+        public DbSet<HourlyWaterUsage> HourlyWaterUsages { get; set; }
+        public DbSet<DailyWaterUsage> DailyWaterUsages { get; set; }
+        public DbSet<MonthlyWaterUsage> MonthlyWaterUsages { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -99,6 +104,19 @@ namespace WaterMeterServer.Infrastructure.Persistence
                 entity.ToTable("communication_logs");
                 entity.Property(x => x.RawData).HasColumnType("bytea");
                 entity.HasIndex(x => x.Timestamp);
+                entity.HasIndex(x => new { x.MeterId, x.Timestamp });
+                entity.Property(x => x.Result).HasMaxLength(32);
+                entity.Property(x => x.ErrorReason).HasMaxLength(512);
+            });
+
+            modelBuilder.Entity<SystemEventLog>(entity =>
+            {
+                entity.ToTable("system_event_logs");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => x.Timestamp);
+                entity.HasIndex(x => new { x.Category, x.Level, x.Timestamp });
+                entity.Property(x => x.Category).HasMaxLength(64);
+                entity.Property(x => x.Message).HasMaxLength(2048);
             });
 
             modelBuilder.Entity<DeviceCommandLog>(entity =>
@@ -113,12 +131,77 @@ namespace WaterMeterServer.Infrastructure.Persistence
             modelBuilder.Entity<FirmwareUpgradeLog>(entity =>
             {
                 entity.ToTable("firmware_upgrade_logs");
+                entity.HasOne(x => x.FirmwareVersion)
+                    .WithMany()
+                    .HasForeignKey(x => x.FirmwareVersionId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            modelBuilder.Entity<FirmwareChunkLog>(entity =>
+            {
+                entity.ToTable("firmware_chunk_logs");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => new { x.FirmwareUpgradeRequestId, x.Offset });
+                entity.Property(x => x.Sha256).HasMaxLength(64);
+                entity.HasOne(x => x.FirmwareUpgradeRequest)
+                    .WithMany()
+                    .HasForeignKey(x => x.FirmwareUpgradeRequestId)
+                    .OnDelete(DeleteBehavior.Cascade);
+                entity.HasOne(x => x.Device)
+                    .WithMany()
+                    .HasForeignKey(x => x.DeviceId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<FirmwareVersion>(entity =>
             {
                 entity.ToTable("firmware_versions");
                 entity.Property(x => x.BinaryData).HasColumnType("bytea");
+            });
+
+            modelBuilder.Entity<WaterUsageRecord>(entity =>
+            {
+                entity.ToTable("water_usage_records");
+                entity.HasKey(x => x.Id);
+                entity.Property(x => x.RawData).HasColumnType("bytea");
+                entity.HasIndex(x => new { x.DeviceId, x.RecordObjectId, x.RecordTime });
+                entity.HasOne(x => x.Device)
+                      .WithMany()
+                      .HasForeignKey(x => x.DeviceId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<HourlyWaterUsage>(entity =>
+            {
+                entity.ToTable("hourly_water_usages");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => new { x.DeviceId, x.HourStart }).IsUnique();
+                entity.HasOne(x => x.Device)
+                      .WithMany()
+                      .HasForeignKey(x => x.DeviceId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<DailyWaterUsage>(entity =>
+            {
+                entity.ToTable("daily_water_usages");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => new { x.DeviceId, x.UsageDate }).IsUnique();
+                entity.HasOne(x => x.Device)
+                      .WithMany()
+                      .HasForeignKey(x => x.DeviceId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<MonthlyWaterUsage>(entity =>
+            {
+                entity.ToTable("monthly_water_usages");
+                entity.HasKey(x => x.Id);
+                entity.HasIndex(x => new { x.DeviceId, x.UsageYear, x.UsageMonth }).IsUnique();
+                entity.HasOne(x => x.Device)
+                      .WithMany()
+                      .HasForeignKey(x => x.DeviceId)
+                      .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }

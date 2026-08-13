@@ -12,7 +12,8 @@ namespace WaterMeterServer.Infrastructure.Logging
         private readonly Channel<CommunicationLog> _channel = Channel.CreateBounded<CommunicationLog>(
             new BoundedChannelOptions(Capacity)
             {
-                FullMode = BoundedChannelFullMode.DropOldest,
+                FullMode = BoundedChannelFullMode.Wait,
+                SingleWriter = false,
                 SingleReader = true
             });
         public ChannelWriter<CommunicationLog> Writer => _channel.Writer;

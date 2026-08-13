@@ -62,6 +62,21 @@ namespace WaterMeterServer.Protocol
             catch { return DateTime.UtcNow; }
         }
 
+        public static DateTime ParseBcdDateTimeMinute(ReadOnlySpan<byte> bcd)
+        {
+            if (bcd.Length < 5)
+                throw new ArgumentException("BCD timestamp must contain at least 5 bytes.", nameof(bcd));
+
+            int year = 2000 + BcdToByte(bcd[0]);
+            int month = BcdToByte(bcd[1]);
+            int day = BcdToByte(bcd[2]);
+            int hour = BcdToByte(bcd[3]);
+            int minute = BcdToByte(bcd[4]);
+            return DateTime.SpecifyKind(
+                new DateTime(year, month, day, hour, minute, 0),
+                DateTimeKind.Utc);
+        }
+
         public static Instant DateTimeToInstant(DateTime dateTime)
         {
             DateTime utcDateTime = DateTime.SpecifyKind(dateTime, DateTimeKind.Utc);

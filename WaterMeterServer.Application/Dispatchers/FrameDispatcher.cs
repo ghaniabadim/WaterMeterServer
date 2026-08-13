@@ -1,11 +1,13 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using NodaTime;
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Security.Cryptography;
 using WaterMeterServer.Domain.Constants;
 using WaterMeterServer.Domain.Entities;
 using WaterMeterServer.Domain.Interfaces;
@@ -22,7 +24,6 @@ namespace WaterMeterServer.Application.Dispatchers
         private readonly IProtocolBuilder _protocolBuilder;
         private readonly ISessionManager _sessionManager;
         private readonly ITelemetryBuffer _telemetryBuffer;
-        private readonly ICommandStore _commandStore;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly LogQueue _logQueue;
 
@@ -31,7 +32,6 @@ namespace WaterMeterServer.Application.Dispatchers
             IProtocolBuilder protocolBuilder,
             ISessionManager sessionManager,
             ITelemetryBuffer telemetryBuffer,
-            ICommandStore commandStore,
             IServiceScopeFactory scopeFactory,
             LogQueue logQueue)
         {
@@ -39,7 +39,6 @@ namespace WaterMeterServer.Application.Dispatchers
             _protocolBuilder = protocolBuilder;
             _sessionManager = sessionManager;
             _telemetryBuffer = telemetryBuffer;
-            _commandStore = commandStore;
             _scopeFactory = scopeFactory;
             _logQueue = logQueue;
         }
@@ -74,8 +73,43 @@ namespace WaterMeterServer.Application.Dispatchers
                 }
                 else
                 {
-                    data = await HandleTransportAsync(frame, context);
+                    var disposition = context.AcceptTerminalFrame(
+                        frame.Mid,
+                        frame.FrameNo);
+
+                    if (disposition == TerminalFrameDisposition.Duplicate)
+                    {
+                        _logger.LogInformation(
+                            "Duplicate terminal frame ignored. Meter={MeterId}, MID={Mid}, FrameNo={FrameNo}",
+                            context.MeterId,
+                            frame.Mid,
+                            frame.FrameNo);
+                        return context.LastResponse;
+                    }
+
+                    if (disposition == TerminalFrameDisposition.Invalid)
+                    {
+                        _logger.LogWarning(
+                            "Out-of-order terminal frame rejected. Meter={MeterId}, MID={Mid}, FrameNo={FrameNo}",
+                            context.MeterId,
+                            frame.Mid,
+                            frame.FrameNo);
+                        data = _protocolBuilder.BuildEndFrameResponse(
+                            context.SessionId.Value,
+                            frame.Mid,
+                            context.NextServerFrameNumber(),
+                            0x01);
+                    }
+                    else
+                    {
+                        data = await HandleTransportAsync(frame, context);
+                    }
                 }
+            }
+
+            if (frame.Type == ProtocolConstants.TypeTransport && data != null)
+            {
+                context.LastResponse = data;
             }
 
             return data;
@@ -85,13 +119,17 @@ namespace WaterMeterServer.Application.Dispatchers
         {
             _logger.LogInformation("Processing handshake for Mid: {Mid}", frame.Mid);
 
-            if (frame.DecryptedData.Length > 23)
+            if (frame.DecryptedData.Length >= 41 &&
+                frame.DecryptedData[0] == 0x09 &&
+                frame.DecryptedData[1] == 0x02)
             {
                 int meterIdLength = frame.DecryptedData[2];
                 if (meterIdLength > 0 && meterIdLength <= 34)
                 {
-                    var meterIdBytes = frame.DecryptedData.AsSpan(3, meterIdLength / 2);
-                    var meterId = Utils.BcdToString(meterIdBytes);
+                    int meterIdBytesLength = (meterIdLength + 1) / 2;
+                    var meterIdBytes = frame.DecryptedData.AsSpan(3, meterIdBytesLength);
+                    var meterId = Utils.BcdToString(meterIdBytes)
+                        .Substring(0, meterIdLength);
                     frame.MeterId = meterId;
 
                     if (_sessionManager.GetSession(meterId) != null)
@@ -117,6 +155,8 @@ namespace WaterMeterServer.Application.Dispatchers
                         var sessionId = _sessionManager.GenerateSessionId(meterId);
                         context.MeterId = meterId;
                         context.SessionId = sessionId;
+                        context.CurrentState = ConnectionContext.TransportState.WaitForReporting;
+                        context.LastResponse = null;
                         device.LastSessionId = sessionId;
                         device.LastSeenAt = Utils.DateTimeToInstant(DateTime.Now);
                         await deviceRegistry.UpdateDeviceAtivityAsync(device);
@@ -141,6 +181,15 @@ namespace WaterMeterServer.Application.Dispatchers
             switch (context.CurrentState)
             {
                 case ConnectionContext.TransportState.WaitForReporting:
+                    if ((frame.DecryptedData[8] & 0x1F) != 0x01)
+                    {
+                        _logger.LogWarning(
+                            "First transport frame is not a reporting frame. Function=0x{Function:X2}",
+                            frame.DecryptedData[8]);
+                        context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                        return await HandleTransportAsync(frame, context);
+                    }
+
                     await ProcessTelemetryObject(frame, context.Device.Id, context);
 
                     bool hasMoreData = (frame.DecryptedData[8] & 0x40) != 0;
@@ -446,6 +495,23 @@ namespace WaterMeterServer.Application.Dispatchers
                                 }
 
                                 // به‌روزرسانی وضعیت در دیتابیس
+                                var chunkStartedAt = DateTime.UtcNow;
+                                var chunkLog = new FirmwareChunkLog
+                                {
+                                    FirmwareUpgradeRequestId = upgradeRequest.Id,
+                                    DeviceId = context.Device?.Id ?? 0,
+                                    SessionId = context.SessionId ?? 0,
+                                    Mid = frame.Mid,
+                                    RequestSequence = incomingReqSeq,
+                                    Offset = requestedOffset,
+                                    Length = chunkData.Length,
+                                    Sha256 = Convert.ToHexString(SHA256.HashData(chunkData)),
+                                    Result = FirmwareChunkResult.Sent,
+                                    StartedAt = chunkStartedAt,
+                                    FinishedAt = DateTime.UtcNow
+                                };
+                                db.FirmwareChunkLogs.Add(chunkLog);
+
                                 upgradeRequest.CurrentOffset = Math.Max(
                                     upgradeRequest.CurrentOffset,
                                     requestedOffset + chunkData.Length);
@@ -515,7 +581,9 @@ namespace WaterMeterServer.Application.Dispatchers
                                 var log = new FirmwareUpgradeLog
                                 {
                                     DeviceId = context.Device?.Id ?? 0,
-                                    FirmwareVersionId = firmwareVersionId,
+                                    FirmwareVersionId = firmwareVersionId == 0
+                                        ? null
+                                        : firmwareVersionId,
                                     LastOffsetSent = upgradeRequest.CurrentOffset,
                                     FinishedAt = DateTime.UtcNow,
                                     ExecutionDate = DateTime.UtcNow,
@@ -565,17 +633,16 @@ namespace WaterMeterServer.Application.Dispatchers
 
                                 upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
 
-                                if (firmwareVersionId != 0)
-                                {
-                                    await db.FirmwareUpgradeLogs.AddAsync(log);
-                                }
-                                else
+                                if (firmwareVersionId == 0)
                                 {
                                     _logger.LogWarning(
-                                        "[FOTA] Firmware version entity not found for {Version}; upgrade result log was not inserted.",
+                                        "[FOTA] Firmware version entity not found for {Version}; recording upgrade audit without version reference.",
                                         upgradeRequest.TargetVersion);
                                 }
 
+                                // The upgrade request contains the authoritative target version and file metadata.
+                                // Keep the final audit record even when the optional catalog entry is missing.
+                                await db.FirmwareUpgradeLogs.AddAsync(log);
                                 await db.SaveChangesAsync();
 
                                 context.CurrentState = ConnectionContext.TransportState.EndConnection;
@@ -642,8 +709,12 @@ namespace WaterMeterServer.Application.Dispatchers
                                     pendingCommands);
 
                             case 0x07:
-                                byte[] bcdTime = pendingCommand.RequestPayload.Take(6).ToArray();
-                                byte limit = pendingCommand.RequestPayload.Length > 6 ? pendingCommand.RequestPayload[6] : (byte)1;
+                                byte[] bcdTime = (pendingCommand.RequestPayload ?? Array.Empty<byte>())
+                                    .Take(6)
+                                    .ToArray();
+                                byte limit = pendingCommand.RequestPayload is { Length: > 6 }
+                                    ? pendingCommand.RequestPayload[6]
+                                    : (byte)1;
                                 return _protocolBuilder.BuildReadRecordsByTimeRequest(
                                     frame.SessionId,
                                     frame.Mid,
@@ -678,9 +749,9 @@ namespace WaterMeterServer.Application.Dispatchers
         {
             try
             {
-                if (frame.DecryptedData == null || frame.DecryptedData.Length < 6) return;
+                if (frame.DecryptedData == null || frame.DecryptedData.Length < 12) return;
 
-                int offset = 2;
+                int offset = 8;
                 byte responseFunctionCode = frame.DecryptedData[offset++];
                 ushort responseSeq = BinaryPrimitives.ReadUInt16BigEndian(frame.DecryptedData.AsSpan(offset, 2));
                 offset += 2;
@@ -731,7 +802,13 @@ namespace WaterMeterServer.Application.Dispatchers
 
                             case 0x87:
                             case 0x88:
-                                HandleRecordResponseBatch(frame.DecryptedData, responseFunctionCode, commandBatch, objectCount);
+                                await HandleRecordResponseBatch(
+                                    frame.DecryptedData,
+                                    responseFunctionCode,
+                                    commandBatch,
+                                    objectCount,
+                                    deviceId,
+                                    db);
                                 break;
 
                             default:
@@ -756,7 +833,7 @@ namespace WaterMeterServer.Application.Dispatchers
 
         private async Task HandleReadObjectsBatch(byte[] data, byte objectCount, List<DeviceCommandLog> batch, WaterMeterDbContext db, Device? device)
         {
-            int offset = 6;
+            int offset = 12;
 
             for (int i = 0; i < objectCount; i++)
             {
@@ -783,7 +860,7 @@ namespace WaterMeterServer.Application.Dispatchers
 
         private async Task HandleWriteObjectsBatch(byte[] data, byte objectCount, List<DeviceCommandLog> batch, WaterMeterDbContext db, long deviceId)
         {
-            int offset = 6;
+            int offset = 12;
 
             for (int i = 0; i < objectCount; i++)
             {
@@ -816,23 +893,109 @@ namespace WaterMeterServer.Application.Dispatchers
             }
         }
 
-        private void HandleRecordResponseBatch(byte[] data, byte functionCode, List<DeviceCommandLog> batch, byte objectCount)
+        private async Task HandleRecordResponseBatch(
+            byte[] data,
+            byte functionCode,
+            List<DeviceCommandLog> batch,
+            byte objectCount,
+            long deviceId,
+            WaterMeterDbContext db)
         {
-            byte recordCount = data[7];
             var mainCmd = batch.First();
 
-            if (recordCount == 0xFF || objectCount == 0xFF)
+            if (objectCount == 0xFF || data.Length < 15)
             {
                 mainCmd.Status = DeviceCommandStatus.Failed;
                 mainCmd.ExecutionResult = "Failed: Terminal does not recognize requested history file or record parameters.";
             }
             else
             {
+                ushort recordObjectId = BinaryPrimitives.ReadUInt16BigEndian(data.AsSpan(12, 2));
+                byte recordCount = data[14];
+                if (recordCount == 0xFF)
+                {
+                    mainCmd.Status = DeviceCommandStatus.Failed;
+                    mainCmd.ExecutionResult = "Failed: Terminal rejected the requested record range.";
+                    return;
+                }
+
+                int offset = 15;
+                int recordLength = GetRecordLength(recordObjectId, data.Length - offset, recordCount);
+                if (recordCount > 0 && recordLength <= 0)
+                {
+                    mainCmd.Status = DeviceCommandStatus.Failed;
+                    mainCmd.ExecutionResult = $"Failed: Unknown record object 0x{recordObjectId:X4}.";
+                    return;
+                }
+
+                int stored = 0;
+                for (int i = 0; i < recordCount; i++)
+                {
+                    if (offset + recordLength > data.Length)
+                        break;
+
+                    byte[] raw = data.AsSpan(offset, recordLength).ToArray();
+                    Instant? recordTime = TryGetRecordTime(recordObjectId, raw);
+                    await db.WaterUsageRecords.AddAsync(new WaterUsageRecord
+                    {
+                        DeviceId = deviceId,
+                        RecordObjectId = recordObjectId,
+                        RecordIndex = i,
+                        ReceivedAt = NodaTime.Instant.FromDateTimeUtc(DateTime.UtcNow),
+                        RecordTime = recordTime,
+                        RawData = raw
+                    });
+                    offset += recordLength;
+                    stored++;
+                }
+
                 mainCmd.Status = DeviceCommandStatus.Succeeded;
                 mainCmd.ExecutionResult = functionCode == 0x87
-                    ? $"Record Read Success: Retrieved {recordCount} logs starting from requested BCD timestamp."
-                    : $"Recent Log Success: Successfully unpacked {recordCount} historical log data structures from flash.";
+                    ? $"Record Read Success: Retrieved and stored {stored}/{recordCount} records starting from requested BCD timestamp."
+                    : $"Recent Log Success: Stored {stored}/{recordCount} historical log data structures from flash.";
             }
+        }
+
+        private static int GetRecordLength(ushort recordObjectId, int remaining, int recordCount)
+        {
+            if (recordCount == 0)
+                return 0;
+
+            return recordObjectId switch
+            {
+                0xB06B => 25,
+                0xB033 or 0xB034 => 250,
+                0xB035 or 0xB036 => 97,
+                _ when remaining % recordCount == 0 => remaining / recordCount,
+                _ => 0
+            };
+        }
+
+        private static NodaTime.Instant? TryGetRecordTime(ushort recordObjectId, byte[] raw)
+        {
+            try
+            {
+                if (recordObjectId == 0xB06B && raw.Length >= 5)
+                {
+                    var time = Utils.ParseBcdDateTimeMinute(raw.AsSpan(0, 5));
+                    return Utils.DateTimeToInstant(time);
+                }
+
+                if ((recordObjectId == 0xB033 || recordObjectId == 0xB034) &&
+                    raw.Length >= 2)
+                {
+                    int year = 2000 + Utils.BcdToByte(raw[0]);
+                    int month = Utils.BcdToByte(raw[1]);
+                    return Utils.DateTimeToInstant(
+                        new DateTime(year, month, 1, 0, 0, 0, DateTimeKind.Utc));
+                }
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return null;
+            }
+
+            return null;
         }
 
         private int GetObjectLength(ushort objId)
@@ -849,7 +1012,8 @@ namespace WaterMeterServer.Application.Dispatchers
                 0x0067 => 16,
                 0x2007 => 18,
                 0x200A => 20,
-                0x70F4 or 0x70F5 => 24,
+                0x70F4 => 24,
+                0x70F5 => 20,
                 0x2012 => 32,
                 _ => 0
             };
@@ -1216,7 +1380,7 @@ namespace WaterMeterServer.Application.Dispatchers
                                     alarmSnap.EmptyPipe = (byte1 & 0x01) != 0;
                                     alarmSnap.ExcitationAlarm = (byte1 & 0x02) != 0;
                                     alarmSnap.LowSignal = (byte1 & 0x08) != 0;
-                                    alarmSnap.MeasurementError = (byte1 & 0x14) != 0;
+                                    alarmSnap.MeasurementError = (byte1 & 0x10) != 0;
                                     alarmSnap.Backflow = (byte1 & 0x20) != 0;
                                     alarmSnap.AbnormallyHighFlow = (byte1 & 0x40) != 0;
 
