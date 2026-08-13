@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Water Meter API Tester</title>
+  <style>
+    body { font-family: Tahoma, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 16px; background: #f5f7fb; color: #172033; }
+    section { background: white; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 10px #0001; }
+    label { display: block; margin: 10px 0 5px; }
+    input, select, button { padding: 10px; border: 1px solid #ccd3df; border-radius: 7px; font-size: 14px; }
+    input, select { width: 100%; box-sizing: border-box; }
+    button { cursor: pointer; background: #1769e0; color: white; border: 0; margin-top: 14px; }
+    button.secondary { background: #526174; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    pre { direction: ltr; text-align: left; white-space: pre-wrap; background: #101827; color: #d8e2f0; padding: 14px; border-radius: 8px; min-height: 80px; }
+    .hint { color: #667085; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>تست API کنتور آب</h1>
+  <p class="hint">کلید API فقط در حافظه همین صفحه استفاده می‌شود.</p>
+  <section>
+    <label for="apiKey">API Key</label>
+    <input id="apiKey" type="password" autocomplete="off" placeholder="کلید API را وارد کنید">
+    <button id="loadMeters">دریافت فهرست کنتورها</button>
+  </section>
+  <section>
+    <div class="row">
+      <div>
+        <label for="meter">کنتور</label>
+        <select id="meter"></select>
+      </div>
+      <div>
+        <label for="objectId">Command ID / Object ID</label>
+        <input id="objectId" value="28786" inputmode="numeric">
+      </div>
+    </div>
+    <button id="sendRequest">ثبت درخواست خواندن</button>
+    <button id="refreshRequests" class="secondary">مشاهده درخواست‌های کنتور</button>
+  </section>
+  <section>
+    <label for="requestId">شناسه درخواست</label>
+    <input id="requestId" inputmode="numeric" placeholder="مثلاً 1">
+    <button id="checkRequest" class="secondary">بررسی وضعیت</button>
+  </section>
+  <section><h3>نتیجه</h3><pre id="result">آماده تست</pre></section>
+  <script>
+    const apiBase = `${location.protocol}//${location.hostname}:5080`;
+    const $ = id => document.getElementById(id);
+    const output = value => $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    const headers = () => ({ "X-Api-Key": $("apiKey").value.trim() });
+    async function call(path, options = {}) {
+      if (!headers()["X-Api-Key"]) throw new Error("API Key را وارد کنید.");
+      const response = await fetch(apiBase + path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
+      const text = await response.text();
+      let data; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+      if (!response.ok) throw new Error(`${response.status}: ${text || response.statusText}`);
+      return data;
+    }
+    async function loadMeters() {
+      try {
+        const meters = await call("/api/meters");
+        $("meter").innerHTML = meters.map(x => `<option value="${x.serialNumber}">${x.serialNumber}</option>`).join("");
+        output(meters);
+      } catch (e) { output(e.message); }
+    }
+    $("loadMeters").onclick = loadMeters;
+    $("sendRequest").onclick = async () => {
+      try {
+        const data = await call(`/api/meters/${encodeURIComponent($("meter").value)}/requests`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ functionCode: 4, commands: [{ commandId: Number($("objectId").value), payloadBase64: null }] })
+        });
+        if (data.requestIds?.length) $("requestId").value = data.requestIds[0];
+        output(data);
+      } catch (e) { output(e.message); }
+    };
+    $("refreshRequests").onclick = async () => {
+      try { output(await call(`/api/meters/${encodeURIComponent($("meter").value)}/requests`)); } catch (e) { output(e.message); }
+    };
+    $("checkRequest").onclick = async () => {
+      try { output(await call(`/api/requests/${encodeURIComponent($("requestId").value)}`)); } catch (e) { output(e.message); }
+    };
+  </script>
+</body>
+</html>

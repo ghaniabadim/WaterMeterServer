@@ -107,6 +107,8 @@ namespace WorkerService
         
 
             var host = builder.Build();
+            host.UseDefaultFiles();
+            host.UseStaticFiles();
             host.UseCors("WebClient");
             host.Use(async (context, next) =>
             {
