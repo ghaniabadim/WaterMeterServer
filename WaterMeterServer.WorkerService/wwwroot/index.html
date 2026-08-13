@@ -3,85 +3,98 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Water Meter API Tester</title>
+  <title>مدیریت هوشمند کنتور</title>
   <style>
-    body { font-family: Tahoma, sans-serif; max-width: 900px; margin: 32px auto; padding: 0 16px; background: #f5f7fb; color: #172033; }
-    section { background: white; border-radius: 12px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 10px #0001; }
-    label { display: block; margin: 10px 0 5px; }
-    input, select, button { padding: 10px; border: 1px solid #ccd3df; border-radius: 7px; font-size: 14px; }
-    input, select { width: 100%; box-sizing: border-box; }
-    button { cursor: pointer; background: #1769e0; color: white; border: 0; margin-top: 14px; }
-    button.secondary { background: #526174; }
-    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    pre { direction: ltr; text-align: left; white-space: pre-wrap; background: #101827; color: #d8e2f0; padding: 14px; border-radius: 8px; min-height: 80px; }
-    .hint { color: #667085; font-size: 13px; }
+    body{font-family:Tahoma,sans-serif;max-width:1000px;margin:24px auto;padding:0 14px;background:#f4f6fa;color:#172033}
+    section{background:#fff;border-radius:12px;padding:18px;margin:14px 0;box-shadow:0 2px 10px #0001}
+    label{display:block;margin:9px 0 5px}input,select,button{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccd3df;border-radius:7px;font-size:14px}
+    button{background:#1769e0;color:#fff;border:0;cursor:pointer;margin-top:12px}button.secondary{background:#566579}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.hidden{display:none}.hint{color:#667085;font-size:12px}
+    pre{direction:ltr;text-align:left;white-space:pre-wrap;background:#101827;color:#d8e2f0;padding:14px;border-radius:8px;min-height:100px}
+    @media(max-width:650px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-  <h1>تست API کنتور آب</h1>
-  <p class="hint">کلید API فقط در حافظه همین صفحه استفاده می‌شود.</p>
+  <h1>مدیریت هوشمند کنتور آب</h1>
+  <p class="hint">همه مقادیر از کاتالوگ پروتکل انتخاب می‌شوند و API Key در سرور ذخیره نمی‌شود.</p>
+
   <section>
-    <label for="apiKey">API Key</label>
-    <input id="apiKey" type="password" autocomplete="off" placeholder="کلید API را وارد کنید">
-    <button id="loadMeters">دریافت فهرست کنتورها</button>
+    <label>API Key</label><input id="key" type="password" autocomplete="off">
+    <button onclick="loadMeters()">بارگذاری کنتورها و کاتالوگ</button>
   </section>
+
   <section>
-    <div class="row">
-      <div>
-        <label for="meter">کنتور</label>
-        <select id="meter"></select>
-      </div>
-      <div>
-        <label for="objectId">Command ID / Object ID</label>
-        <input id="objectId" value="28786" inputmode="numeric">
-      </div>
+    <div class="grid">
+      <div><label>کنتور</label><select id="meter"></select></div>
+      <div><label>نوع عملیات</label><select id="operation" onchange="renderFields()">
+        <option value="read">خواندن داده</option>
+        <option value="write">نوشتن داده</option>
+        <option value="readByStartTime">خواندن از زمان شروع</option>
+        <option value="readByRecords">خواندن تعداد رکورد اخیر</option>
+        <option value="firmware">ارتقای فریمور</option>
+      </select></div>
     </div>
-    <button id="sendRequest">ثبت درخواست خواندن</button>
-    <button id="refreshRequests" class="secondary">مشاهده درخواست‌های کنتور</button>
+    <div id="objectBox"><label>داده / Object</label><select id="object"></select><p id="objectHint" class="hint"></p></div>
+    <div id="valueBox"><label id="valueLabel">مقدار</label><input id="value"><p id="valueHint" class="hint"></p></div>
+    <div id="startBox" class="hidden"><label>زمان شروع ISO</label><input id="start" type="datetime-local"><label>حداکثر رکورد</label><input id="limit" type="number" min="1" max="255" value="10"></div>
+    <div id="countBox" class="hidden"><label>تعداد رکورد</label><input id="count" type="number" min="1" max="255" value="10"></div>
+    <div id="firmwareBox" class="hidden">
+      <label>نسخه فعلی</label><input id="currentVersion" placeholder="مثلاً V1.0">
+      <label>نسخه هدف</label><input id="targetVersion" placeholder="مثلاً V1.1">
+      <label>فایل Firmware</label><input id="file" type="file">
+    </div>
+    <button onclick="submitOperation()">ارسال درخواست</button>
   </section>
+
   <section>
-    <label for="requestId">شناسه درخواست</label>
-    <input id="requestId" inputmode="numeric" placeholder="مثلاً 1">
-    <button id="checkRequest" class="secondary">بررسی وضعیت</button>
+    <div class="grid"><div><label>شناسه درخواست</label><input id="requestId"></div><div><label>سریال انتخابی</label><input id="selectedSerial" readonly></div></div>
+    <button class="secondary" onclick="checkStatus()">بررسی وضعیت درخواست</button>
+    <button class="secondary" onclick="loadHistory()">مشاهده تاریخچه کنتور</button>
   </section>
-  <section><h3>نتیجه</h3><pre id="result">آماده تست</pre></section>
-  <script>
-    const apiBase = `${location.protocol}//${location.hostname}:5080`;
-    const $ = id => document.getElementById(id);
-    const output = value => $("result").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-    const headers = () => ({ "X-Api-Key": $("apiKey").value.trim() });
-    async function call(path, options = {}) {
-      if (!headers()["X-Api-Key"]) throw new Error("API Key را وارد کنید.");
-      const response = await fetch(apiBase + path, { ...options, headers: { ...headers(), ...(options.headers || {}) } });
-      const text = await response.text();
-      let data; try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-      if (!response.ok) throw new Error(`${response.status}: ${text || response.statusText}`);
-      return data;
-    }
-    async function loadMeters() {
-      try {
-        const meters = await call("/api/meters");
-        $("meter").innerHTML = meters.map(x => `<option value="${x.serialNumber}">${x.serialNumber}</option>`).join("");
-        output(meters);
-      } catch (e) { output(e.message); }
-    }
-    $("loadMeters").onclick = loadMeters;
-    $("sendRequest").onclick = async () => {
-      try {
-        const data = await call(`/api/meters/${encodeURIComponent($("meter").value)}/requests`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ functionCode: 4, commands: [{ commandId: Number($("objectId").value), payloadBase64: null }] })
-        });
-        if (data.requestIds?.length) $("requestId").value = data.requestIds[0];
-        output(data);
-      } catch (e) { output(e.message); }
-    };
-    $("refreshRequests").onclick = async () => {
-      try { output(await call(`/api/meters/${encodeURIComponent($("meter").value)}/requests`)); } catch (e) { output(e.message); }
-    };
-    $("checkRequest").onclick = async () => {
-      try { output(await call(`/api/requests/${encodeURIComponent($("requestId").value)}`)); } catch (e) { output(e.message); }
-    };
-  </script>
+  <section><h3>نتیجه</h3><pre id="result">آماده</pre></section>
+
+<script>
+const $=id=>document.getElementById(id), base=`${location.protocol}//${location.host}`;
+let catalog=null;
+function out(x){$("result").textContent=typeof x==="string"?x:JSON.stringify(x,null,2)}
+function hdr(){return {"X-Api-Key":$("key").value.trim()}}
+async function api(path,opt={}){if(!hdr()["X-Api-Key"])throw Error("API Key را وارد کنید");let r=await fetch(base+path,{...opt,headers:{...hdr(),...(opt.headers||{})}});let t=await r.text(),d;try{d=t?JSON.parse(t):null}catch{d=t}if(!r.ok)throw Error(`${r.status}: ${t}`);return d}
+async function loadMeters(){try{let [meters,cat]=await Promise.all([api("/api/meters"),api("/api/command-catalog")]);catalog=cat;$("meter").innerHTML=meters.map(x=>`<option>${x.serialNumber}</option>`).join("");$("selectedSerial").value=$("meter").value;renderFields();out({meters,catalog:cat})}catch(e){out(e.message)}}
+$("meter").onchange=()=>$("selectedSerial").value=$("meter").value;
+function renderFields(){
+ let op=$("operation").value,isFw=op==="firmware";
+ $("objectBox").classList.toggle("hidden",isFw);$("valueBox").classList.toggle("hidden",isFw&&true);
+ $("startBox").classList.toggle("hidden",op!=="readByStartTime");$("countBox").classList.toggle("hidden",op!=="readByRecords");$("firmwareBox").classList.toggle("hidden",!isFw);
+ if(!catalog||isFw)return;
+ let mode=op==="write"?"write":op.startsWith("readBy")?"record":"read";
+ let items=catalog.objects.filter(x=>x.modes.includes(mode));
+ $("object").innerHTML=items.map(x=>`<option value="${x.name}">${x.title} (${x.objectId})</option>`).join("");
+ updateValue();
+}
+$("object").onchange=updateValue;
+function updateValue(){
+ if(!catalog)return;let x=catalog.objects.find(x=>x.name===$("object").value);if(!x)return;
+ $("value").value="";$("value").placeholder=x.valueType==="enum"?"یکی از مقادیر مجاز":x.valueType==="datetime"?"2026-08-13T12:00":"";
+ $("valueHint").textContent=`نوع: ${x.valueType} | طول: ${x.payloadLength||"خودکار"} بایت`+(x.allowedValues?` | مجاز: ${x.allowedValues.join(", ")}`:"");
+}
+async function submitOperation(){
+ try{
+  let op=$("operation").value,serial=$("meter").value;
+  if(op==="firmware"){
+   let f=$("file").files[0];if(!f)throw Error("فایل Firmware را انتخاب کنید");
+   let form=new FormData();form.append("file",f);form.append("currentVersion",$("currentVersion").value);form.append("targetVersion",$("targetVersion").value);
+   let r=await fetch(`${base}/api/meters/${serial}/firmware`,{method:"POST",headers:hdr(),body:form});let d=await r.json();if(!r.ok)throw Error(JSON.stringify(d));$("requestId").value=d.requestId;out(d);return;
+  }
+  let body={operation:op,objectName:$("object").value,value:$("value").value};
+  if(op==="readByStartTime"){body.startTime=new Date($("start").value).toISOString();body.recordLimit=Number($("limit").value)}
+  if(op==="readByRecords")body.recordCount=Number($("count").value);
+  let d=await api(`/api/meters/${serial}/commands`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  $("requestId").value=d.requestId;out(d);
+ }catch(e){out(e.message)}
+}
+async function checkStatus(){try{out(await api(`/api/requests/${$("requestId").value}`))}catch(e){out(e.message)}}
+async function loadHistory(){try{out(await api(`/api/meters/${$("meter").value}/requests`))}catch(e){out(e.message)}}
+renderFields();
+</script>
 </body>
 </html>

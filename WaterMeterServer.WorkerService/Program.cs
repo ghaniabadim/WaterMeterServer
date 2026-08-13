@@ -136,6 +136,7 @@ namespace WorkerService
                 await next();
             });
             host.MapCommandRequestEndpoints();
+            host.MapSmartCommandEndpoints();
 
             using (var scope = host.Services.CreateScope())
             {
