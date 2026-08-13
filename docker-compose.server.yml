@@ -1,0 +1,21 @@
+services:
+  water-meter-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: water-meter-server:server
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      ConnectionStrings__DefaultConnection: ${CONNECTION_STRING:?Set CONNECTION_STRING in .env.server}
+      Protocol__AesKey: ${PROTOCOL_AES_KEY:?Set PROTOCOL_AES_KEY in .env.server}
+      Api__ApiKey: ${API_KEY:?Set API_KEY in .env.server}
+      Api__Listen: http://0.0.0.0
+      Api__Port: ${API_PORT:-5080}
+      TcpServer__Port: ${TCP_PORT:-502}
+      Firmware__RootPath: /var/lib/water-meter/firmware
+    volumes:
+      - firmware-data:/var/lib/water-meter/firmware
+
+volumes:
+  firmware-data:
