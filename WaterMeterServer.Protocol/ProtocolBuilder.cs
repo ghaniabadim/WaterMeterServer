@@ -269,6 +269,94 @@ namespace WaterMeterServer.Protocol
             return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
         }
 
+        public byte[] BuildNegativeReadResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber,
+            byte responseFunctionCode = ProtocolConstants.FunCodeResponseReadData)
+        {
+            return BuildNegativeObjectResponse(
+                sessionId, mid, frameNumber, requestNumber, responseFunctionCode, includeObjectId: false, 0);
+        }
+
+        public byte[] BuildNegativeWriteResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber)
+        {
+            return BuildNegativeObjectResponse(
+                sessionId, mid, frameNumber, requestNumber,
+                ProtocolConstants.FunCodeResponseWriteData, includeObjectId: false, 0);
+        }
+
+        public byte[] BuildNegativeReadRecordsByTimeResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber,
+            ushort recordObjectId)
+        {
+            return BuildNegativeRecordResponse(
+                sessionId, mid, frameNumber, requestNumber,
+                ProtocolConstants.FunCodeNegativeReadRecordsByTime, recordObjectId);
+        }
+
+        public byte[] BuildNegativeReadRecentRecordsResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber,
+            ushort recordObjectId)
+        {
+            return BuildNegativeRecordResponse(
+                sessionId, mid, frameNumber, requestNumber,
+                ProtocolConstants.FunCodeNegativeReadRecentRecords, recordObjectId);
+        }
+
+        private byte[] BuildNegativeObjectResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber,
+            byte functionCode,
+            bool includeObjectId,
+            ushort objectId)
+        {
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId, frameNumber);
+            WriteBigEndian(ms, (ushort)2); // Function + object count, after request sequence.
+            ms.WriteByte(functionCode);
+            WriteBigEndian(ms, requestNumber);
+            ms.WriteByte(0xFF); // No supported objects.
+            if (includeObjectId)
+            {
+                WriteBigEndian(ms, objectId);
+            }
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
+        private byte[] BuildNegativeRecordResponse(
+            uint sessionId,
+            byte mid,
+            ushort frameNumber,
+            ushort requestNumber,
+            byte functionCode,
+            ushort recordObjectId)
+        {
+            using var ms = new MemoryStream();
+            WriteStandardHeader(ms, sessionId, frameNumber);
+            WriteBigEndian(ms, (ushort)4); // Function + record object ID + record count.
+            ms.WriteByte(functionCode);
+            WriteBigEndian(ms, requestNumber);
+            WriteBigEndian(ms, recordObjectId);
+            ms.WriteByte(0xFF); // Unknown object / no records.
+
+            return WrapPacket(ProtocolConstants.TypeTransport, mid, 0x02, _cryptoService.Encrypt(ms.ToArray()));
+        }
+
         private byte[] WrapPacket(byte type, byte mid, byte ctrl, byte[] encryptedData)
         {
             int totalLen = 10 + encryptedData.Length;

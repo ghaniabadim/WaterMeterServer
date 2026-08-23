@@ -20,6 +20,10 @@ namespace WaterMeterServer.Domain.Interfaces
 
         public byte[] BuildReadRecordsByTimeRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId, byte[] bcdStartTime, byte recordLimit);
         public byte[] BuildReadRecentRecordsRequest(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId, byte recordCount);
+        public byte[] BuildNegativeReadResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, byte responseFunctionCode = 0x84);
+        public byte[] BuildNegativeWriteResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber);
+        public byte[] BuildNegativeReadRecordsByTimeResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId);
+        public byte[] BuildNegativeReadRecentRecordsResponse(uint sessionId, byte mid, ushort frameNumber, ushort requestNumber, ushort recordObjectId);
 
 
         // فریم‌های مربوط به آپدیت فریمور (بخش ۸ سند)

@@ -103,3 +103,8 @@ msbuild.wrn
 /--port
 /--scenario
 /dotnet
+
+# Local deployment outputs
+/.deploy/publish/
+/.deploy/linux-publish/
+/.deploy/*.tar.gz

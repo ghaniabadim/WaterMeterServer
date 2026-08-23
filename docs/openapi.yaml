@@ -1,0 +1,312 @@
+openapi: 3.0.3
+info:
+  title: Water Meter Server API
+  version: 1.0.0
+  description: |
+    قرارداد API سرور مدیریت کنتور آب.
+    تمام مسیرهای زیر `/api` به هدر `X-Api-Key` نیاز دارند.
+servers:
+  - url: http://localhost:5080
+    description: محیط محلی
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: Meters
+  - name: Commands
+  - name: Firmware
+paths:
+  /api/meters:
+    get:
+      tags: [Meters]
+      summary: فهرست کنتورها
+      operationId: listMeters
+      responses:
+        '200':
+          description: فهرست کنتورها
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MeterSummary'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/meters/{serialNumber}/requests:
+    parameters:
+      - $ref: '#/components/parameters/SerialNumber'
+    get:
+      tags: [Commands]
+      summary: تاریخچه ۱۰۰ درخواست اخیر کنتور
+      operationId: listMeterRequests
+      responses:
+        '200':
+          description: درخواست‌ها
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CommandRequestSummary'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [Commands]
+      summary: ایجاد حداکثر ۵ فرمان خام
+      operationId: createMeterRequests
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCommandRequest'
+            examples:
+              read:
+                value:
+                  functionCode: 4
+                  commands:
+                    - commandId: 28914
+                      payloadBase64: ""
+      responses:
+        '202':
+          description: فرمان‌ها در صف ارسال قرار گرفتند
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchAccepted'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/requests/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [Commands]
+      summary: جزئیات یک درخواست
+      operationId: getRequest
+      responses:
+        '200':
+          description: جزئیات درخواست
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRequest'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/command-catalog:
+    get:
+      tags: [Commands]
+      summary: کاتالوگ عملیات و اشیای پروتکل
+      operationId: getCommandCatalog
+      responses:
+        '200':
+          description: کاتالوگ
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandCatalog'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/meters/{serialNumber}/commands:
+    parameters:
+      - $ref: '#/components/parameters/SerialNumber'
+    post:
+      tags: [Commands]
+      summary: ایجاد فرمان هوشمند
+      operationId: createSmartCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmartCommandRequest'
+      responses:
+        '202':
+          description: فرمان در صف ارسال قرار گرفت
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmartAccepted'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/meters/{serialNumber}/firmware:
+    parameters:
+      - $ref: '#/components/parameters/SerialNumber'
+    post:
+      tags: [Firmware]
+      summary: ایجاد درخواست ارتقای firmware
+      operationId: createFirmwareUpgrade
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file, currentVersion, targetVersion]
+              properties:
+                file: { type: string, format: binary }
+                currentVersion: { type: string }
+                targetVersion: { type: string }
+      responses:
+        '202':
+          description: درخواست ارتقا ایجاد شد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirmwareAccepted'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: ارتقای فعال دیگری برای کنتور وجود دارد
+  /api/firmware/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer, format: int64, minimum: 1 }
+    get:
+      tags: [Firmware]
+      summary: وضعیت ارتقای firmware
+      operationId: getFirmwareUpgrade
+      responses:
+        '200':
+          description: وضعیت ارتقا
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FirmwareStatus'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+  parameters:
+    SerialNumber:
+      name: serialNumber
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+  responses:
+    Unauthorized:
+      description: کلید API نامعتبر یا ارسال نشده است
+    NotFound:
+      description: منبع پیدا نشد
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    BadRequest:
+      description: ورودی نامعتبر است
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    MeterSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        serialNumber: { type: string }
+        status: { type: integer, format: int32 }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+        hasPendingCommands: { type: boolean }
+    CommandItem:
+      type: object
+      required: [commandId]
+      properties:
+        commandId: { type: integer, minimum: 0, maximum: 65535 }
+        payloadBase64: { type: string, format: byte, default: "" }
+    CreateCommandRequest:
+      type: object
+      required: [functionCode, commands]
+      properties:
+        functionCode:
+          type: integer
+          format: int32
+          enum: [4, 5, 7, 8]
+        commands:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items: { $ref: '#/components/schemas/CommandItem' }
+    CommandRequestSummary:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        functionCode: { type: integer, format: int32 }
+        commandId: { type: integer }
+        status: { type: string }
+        executionResult: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        sentAt: { type: string, format: date-time, nullable: true }
+        respondedAt: { type: string, format: date-time, nullable: true }
+    CommandRequest:
+      allOf:
+        - $ref: '#/components/schemas/CommandRequestSummary'
+        - type: object
+          properties:
+            serialNumber: { type: string }
+            requestPayload: { type: string, format: byte }
+            responsePayload: { type: string, format: byte, nullable: true }
+    BatchAccepted:
+      type: object
+      properties:
+        meter: { type: string }
+        status: { type: string, example: Pending }
+        requestIds:
+          type: array
+          items: { type: integer, format: int64 }
+    SmartCommandRequest:
+      type: object
+      required: [operation]
+      properties:
+        operation:
+          type: string
+          enum: [read, write, readByStartTime, readByRecords]
+        objectName: { type: string }
+        objectId: { type: integer, minimum: 0, maximum: 65535 }
+        value: { type: string }
+        payloadBase64: { type: string, format: byte }
+        startTime: { type: string, format: date-time }
+        recordLimit: { type: integer, minimum: 1, maximum: 255 }
+        recordCount: { type: integer, minimum: 1, maximum: 255 }
+    SmartAccepted:
+      type: object
+      properties:
+        requestId: { type: integer, format: int64 }
+        meter: { type: string }
+        operation: { type: string }
+        objectName: { type: string }
+        objectId: { type: string, example: "0x70F2" }
+        status: { type: string, example: Pending }
+    FirmwareAccepted:
+      type: object
+      properties:
+        requestId: { type: integer, format: int64 }
+        meter: { type: string }
+        targetVersion: { type: string }
+        fileSize: { type: integer, format: int32 }
+        crc32: { type: string, example: "0xA1B2C3D4" }
+        status: { type: string }
+    FirmwareStatus:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        meterId: { type: string }
+        targetVersion: { type: string }
+        fileSize: { type: integer, format: int32 }
+        crc32: { type: string }
+        state: { type: string }
+        currentOffset: { type: integer, format: int32 }
+        chunkSize: { type: integer, format: int32 }
+        lastErrorMessage: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        lastUpdatedAt: { type: string, format: date-time, nullable: true }

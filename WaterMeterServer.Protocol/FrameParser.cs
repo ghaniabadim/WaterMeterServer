@@ -68,7 +68,7 @@ namespace WaterMeterServer.Protocol
             if (version != 0 ||
                 (type != ProtocolConstants.TypeTransport &&
                  type != ProtocolConstants.TypeHandshake) ||
-                (type == ProtocolConstants.TypeHandshake && control != 0x01) ||
+                (type == ProtocolConstants.TypeHandshake && control is not (0x01 or 0x02)) ||
                 (type == ProtocolConstants.TypeTransport &&
                  control is not (ProtocolConstants.ControlReporting
                      or ProtocolConstants.ControlDistribution
@@ -131,7 +131,18 @@ namespace WaterMeterServer.Protocol
 
             if (type == ProtocolConstants.TypeHandshake)
             {
-                if (decryptedData.Length < 41)
+                if (control == 0x02)
+                {
+                    if (decryptedData.Length < 26)
+                    {
+                        Reject("Handshake response payload is too short.", frameSeq);
+                        failureReason = rejectedReason;
+                        data = rejectedData;
+                        buffer = buffer.Slice(frameSeq.End);
+                        return false;
+                    }
+                }
+                else if (decryptedData.Length < 41)
                 {
                     Reject("Handshake payload is too short.", frameSeq);
                     failureReason = rejectedReason;
@@ -140,16 +151,19 @@ namespace WaterMeterServer.Protocol
                     return false;
                 }
 
-                int meterDigits = decryptedData[2];
-                int meterBytes = (meterDigits + 1) / 2;
-                if (decryptedData.Length < 3 + meterBytes ||
-                    meterDigits is < 1 or > 34)
+                else
                 {
-                    Reject("Handshake meter identifier length is invalid.", frameSeq);
-                    failureReason = rejectedReason;
-                    data = rejectedData;
-                    buffer = buffer.Slice(frameSeq.End);
-                    return false;
+                    int meterDigits = decryptedData[2];
+                    int meterBytes = (meterDigits + 1) / 2;
+                    if (decryptedData.Length < 3 + meterBytes ||
+                        meterDigits is < 1 or > 34)
+                    {
+                        Reject("Handshake meter identifier length is invalid.", frameSeq);
+                        failureReason = rejectedReason;
+                        data = rejectedData;
+                        buffer = buffer.Slice(frameSeq.End);
+                        return false;
+                    }
                 }
             }
             else

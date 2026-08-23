@@ -25,6 +25,8 @@
         public UpgradeState State { get; set; } = UpgradeState.Idle;
         public int CurrentOffset { get; set; } // آفست فعلی (برای قابلیت Resume)
         public int ChunkSize { get; set; } = 256; // سایز هر پکت ارسالی (معمولاً 256 یا 512)
+        public int RetryCount { get; set; }
+        public int MaxRetries { get; set; } = 3;
 
         public string? LastErrorMessage { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

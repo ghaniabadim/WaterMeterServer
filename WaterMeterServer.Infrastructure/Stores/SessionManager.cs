@@ -8,9 +8,27 @@ namespace WaterMeterServer.Infrastructure.Stores
         private readonly ConcurrentDictionary<string, uint> _activeSessions = new();
         private readonly ConcurrentDictionary<uint, string> _sessionToMeterMap = new();
         private readonly ConcurrentDictionary<string, byte> _lastMids = new();
+        private readonly ConcurrentDictionary<string, DateTimeOffset> _lastActivity = new();
+        private readonly TimeSpan _sessionTtl;
+        private readonly Func<DateTimeOffset> _now;
+
+        public SessionManager(TimeSpan? sessionTtl = null, Func<DateTimeOffset>? now = null)
+        {
+            _sessionTtl = sessionTtl ?? TimeSpan.FromMinutes(30);
+            if (_sessionTtl <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(sessionTtl));
+            _now = now ?? (() => DateTimeOffset.UtcNow);
+        }
 
         public uint GenerateSessionId(string meterSerialNumber)
         {
+            if (_activeSessions.TryRemove(meterSerialNumber, out var previousSid))
+            {
+                _sessionToMeterMap.TryRemove(previousSid, out _);
+                _lastMids.TryRemove(meterSerialNumber, out _);
+                _lastActivity.TryRemove(meterSerialNumber, out _);
+            }
+
             uint sid;
             do
             {
@@ -21,12 +39,24 @@ namespace WaterMeterServer.Infrastructure.Stores
             while (!_sessionToMeterMap.TryAdd(sid, meterSerialNumber));
 
             _activeSessions[meterSerialNumber] = sid;
+            _lastActivity[meterSerialNumber] = _now();
             return sid;
         }
 
         public bool ValidateSession(string meterId, uint sessionId)
         {
-            return _activeSessions.TryGetValue(meterId, out var activeSid) && activeSid == sessionId;
+            if (!_activeSessions.TryGetValue(meterId, out var activeSid) || activeSid != sessionId)
+                return false;
+
+            if (!_lastActivity.TryGetValue(meterId, out var lastActivity) ||
+                _now() - lastActivity > _sessionTtl)
+            {
+                RemoveSession(meterId);
+                return false;
+            }
+
+            _lastActivity[meterId] = _now();
+            return true;
         }
 
         public bool ValidateSessionAndSequence(string meterId, uint sessionId, byte incomingMid)
@@ -51,12 +81,16 @@ namespace WaterMeterServer.Infrastructure.Stores
             {
                 _sessionToMeterMap.TryRemove(sid, out _);
                 _lastMids.TryRemove(meterId, out _);
+                _lastActivity.TryRemove(meterId, out _);
             }
         }
 
         public uint? GetSession(string meterId)
         {
-            return _activeSessions.TryGetValue(meterId, out var sessionId) ? sessionId : null;
+            return _activeSessions.TryGetValue(meterId, out var sessionId) &&
+                   ValidateSession(meterId, sessionId)
+                ? sessionId
+                : null;
         }
 
         public string? GetMeterIdBySession(uint sessionId)

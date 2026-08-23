@@ -20,6 +20,7 @@ namespace WaterMeterServer.Application.Dispatchers
 {
     public sealed class FrameDispatcher
     {
+        private static readonly TimeSpan FirmwareUpgradeTimeout = TimeSpan.FromMinutes(10);
         private readonly ILogger<FrameDispatcher> _logger;
         private readonly IProtocolBuilder _protocolBuilder;
         private readonly ISessionManager _sessionManager;
@@ -315,12 +316,49 @@ namespace WaterMeterServer.Application.Dispatchers
                     upgradeRequest.State,
                     context.MeterId);
 
+                if (upgradeRequest.LastUpdatedAt.HasValue &&
+                    DateTime.UtcNow - upgradeRequest.LastUpdatedAt.Value > FirmwareUpgradeTimeout)
+                {
+                    upgradeRequest.State = UpgradeState.Failed;
+                    upgradeRequest.LastErrorMessage =
+                        $"Firmware upgrade timed out after {FirmwareUpgradeTimeout.TotalMinutes:0} minutes.";
+                    await db.SaveChangesAsync();
+                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                    return await HandleTransportAsync(frame, context);
+                }
+
                 switch (upgradeRequest.State)
                 {
                     case UpgradeState.Idle:
                         {
                             // Step 1: ارسال درخواست ارتقا به کنتور (430CH)
                             _logger.LogInformation("[FOTA] Step 1: Initiating Firmware Upgrade (430CH) for Meter: {MeterId}", context.MeterId);
+
+                            try
+                            {
+                                var storage = scope.ServiceProvider.GetRequiredService<IFirmwareStorageService>();
+                                int actualSize = await storage.GetFileSizeAsync(upgradeRequest.FilePath);
+                                if (actualSize <= 0 || actualSize != upgradeRequest.FileSize)
+                                {
+                                    throw new InvalidDataException(
+                                        $"Firmware file size mismatch. Expected={upgradeRequest.FileSize}, Actual={actualSize}.");
+                                }
+
+                                uint actualCrc = await storage.CalculateCrc32Async(upgradeRequest.FilePath);
+                                if (actualCrc != upgradeRequest.FileCrc32)
+                                {
+                                    throw new InvalidDataException(
+                                        $"Firmware CRC32 mismatch. Expected=0x{upgradeRequest.FileCrc32:X8}, Actual=0x{actualCrc:X8}.");
+                                }
+                            }
+                            catch (Exception ex) when (ex is IOException or InvalidDataException)
+                            {
+                                upgradeRequest.State = UpgradeState.Failed;
+                                upgradeRequest.LastErrorMessage = ex.Message;
+                                await db.SaveChangesAsync();
+                                context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                return await HandleTransportAsync(frame, context);
+                            }
 
                             string currentVersion = context.Device?.FirmwareVersion ?? "02605302";
                             ushort currentReqSeq = context.SequenceNumber;
@@ -335,6 +373,7 @@ namespace WaterMeterServer.Application.Dispatchers
                             );
 
                             upgradeRequest.State = UpgradeState.RequestInitiated;
+                            upgradeRequest.RetryCount = 0;
                             upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
                             await db.SaveChangesAsync();
 
@@ -351,6 +390,19 @@ namespace WaterMeterServer.Application.Dispatchers
                                 FirmwareObjectIds.UpgradeStatus,
                                 out byte[] statusData))
                             {
+                                upgradeRequest.RetryCount++;
+                                if (upgradeRequest.RetryCount > Math.Max(0, upgradeRequest.MaxRetries))
+                                {
+                                    upgradeRequest.State = UpgradeState.Failed;
+                                    upgradeRequest.LastErrorMessage =
+                                        $"Terminal did not acknowledge firmware upgrade request after {upgradeRequest.MaxRetries} retries.";
+                                    await db.SaveChangesAsync();
+                                    context.CurrentState = ConnectionContext.TransportState.EndConnection;
+                                    return await HandleTransportAsync(frame, context);
+                                }
+
+                                upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
+                                await db.SaveChangesAsync();
                                 _logger.LogInformation(
                                     "[FOTA] No 4304H status was included in the initial report. Re-sending 430CH to Meter {MeterId}.",
                                     context.MeterId);
@@ -406,6 +458,7 @@ namespace WaterMeterServer.Application.Dispatchers
                             );
 
                             upgradeRequest.State = UpgradeState.InfoSent;
+                            upgradeRequest.RetryCount = 0;
                             upgradeRequest.LastUpdatedAt = DateTime.UtcNow;
                             await db.SaveChangesAsync();
 
@@ -451,7 +504,10 @@ namespace WaterMeterServer.Application.Dispatchers
                                 int requestedLength = (int)requestedLengthValue;
                                 int maximumChunkSize = Math.Max(1, upgradeRequest.ChunkSize);
 
-                                if (requestedOffset >= upgradeRequest.FileSize || requestedLength > maximumChunkSize)
+                                long requestedEnd = (long)requestedOffset + requestedLength;
+                                if (requestedOffset >= upgradeRequest.FileSize ||
+                                    requestedEnd > upgradeRequest.FileSize ||
+                                    requestedLength > maximumChunkSize)
                                 {
                                     upgradeRequest.State = UpgradeState.Failed;
                                     upgradeRequest.LastErrorMessage =
@@ -515,6 +571,7 @@ namespace WaterMeterServer.Application.Dispatchers
                                 upgradeRequest.CurrentOffset = Math.Max(
                                     upgradeRequest.CurrentOffset,
                                     requestedOffset + chunkData.Length);
+                                upgradeRequest.RetryCount = 0;
                                 upgradeRequest.State = (upgradeRequest.CurrentOffset >= upgradeRequest.FileSize)
                                     ? UpgradeState.WaitingForStatus
                                     : UpgradeState.DataTransferring;
