@@ -45,14 +45,18 @@ namespace WorkerService
             }
 
             var apiKey = builder.Configuration["Api:ApiKey"];
-            if (string.IsNullOrWhiteSpace(apiKey))
-                throw new InvalidOperationException("Api__ApiKey must be configured through a secure deployment secret.");
+            var authUsername = builder.Configuration["Auth:InitialUsername"];
+            var authPassword = builder.Configuration["Auth:InitialPassword"];
+            if (string.IsNullOrWhiteSpace(authUsername) || string.IsNullOrWhiteSpace(authPassword))
+                throw new InvalidOperationException("Auth__InitialUsername and Auth__InitialPassword must be configured.");
             var apiPort = builder.Configuration.GetValue<int?>("Api:Port") ?? 5080;
             if (apiPort is < 1 or > 65535)
                 throw new InvalidOperationException("Api:Port must be between 1 and 65535.");
             var apiListen = builder.Configuration["Api:Listen"] ?? "http://127.0.0.1";
             builder.WebHost.UseUrls($"{apiListen}:{apiPort}");
-            builder.Services.AddSingleton(new ApiKeyOptions(apiKey));
+            builder.Services.AddSingleton(new ApiAuthentication(authUsername, authPassword));
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                builder.Services.AddSingleton(new ApiKeyOptions(apiKey));
             var allowedOrigins = builder.Configuration
                 .GetSection("Api:AllowedOrigins")
                 .Get<string[]>() ?? Array.Empty<string>();
@@ -124,16 +128,38 @@ namespace WorkerService
                     return;
                 }
 
-                var options = context.RequestServices.GetRequiredService<ApiKeyOptions>();
-                if (!context.Request.Headers.TryGetValue("X-Api-Key", out var supplied) ||
-                    !CryptographicOperations.FixedTimeEquals(
+                if (context.Request.Path.StartsWithSegments("/api/auth/login"))
+                {
+                    await next();
+                    return;
+                }
+
+                var auth = context.RequestServices.GetRequiredService<ApiAuthentication>();
+                bool authorized = false;
+                if (context.Request.Headers.TryGetValue("Authorization", out var authorization) &&
+                    authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+                {
+                    authorized = auth.ValidateToken(authorization.ToString()["Bearer ".Length..].Trim());
+                }
+                if (!authorized && context.Request.Headers.TryGetValue("X-Api-Key", out var supplied) &&
+                    context.RequestServices.GetService<ApiKeyOptions>() is { } options)
+                {
+                    authorized = CryptographicOperations.FixedTimeEquals(
                         System.Text.Encoding.UTF8.GetBytes(supplied.ToString()),
-                        System.Text.Encoding.UTF8.GetBytes(options.Value)))
+                        System.Text.Encoding.UTF8.GetBytes(options.Value));
+                }
+                if (!authorized)
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
                 await next();
+            });
+            host.MapPost("/api/auth/login", (LoginRequest request, ApiAuthentication auth) =>
+            {
+                if (!auth.ValidateCredentials(request.Username, request.Password))
+                    return Results.Unauthorized();
+                return Results.Ok(auth.IssueToken());
             });
             host.MapCommandRequestEndpoints();
             host.MapSmartCommandEndpoints();

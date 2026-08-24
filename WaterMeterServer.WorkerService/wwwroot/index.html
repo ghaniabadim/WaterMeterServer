@@ -19,8 +19,12 @@
   <p class="hint">همه مقادیر از کاتالوگ پروتکل انتخاب می‌شوند و API Key در سرور ذخیره نمی‌شود.</p>
 
   <section>
-    <label>API Key</label><input id="key" type="password" autocomplete="off">
-    <button onclick="loadMeters()">بارگذاری کنتورها و کاتالوگ</button>
+    <div class="grid">
+      <div><label>Username</label><input id="username" autocomplete="username"></div>
+      <div><label>Password</label><input id="password" type="password" autocomplete="current-password"></div>
+    </div>
+    <button onclick="login()">Login and load meters</button>
+    <button class="secondary" onclick="logout()">Logout</button>
   </section>
 
   <section>
@@ -55,10 +59,12 @@
 
 <script>
 const $=id=>document.getElementById(id), base=`${location.protocol}//${location.host}`;
-let catalog=null;
+let catalog=null, accessToken=localStorage.getItem("waterMeterAccessToken")||"";
 function out(x){$("result").textContent=typeof x==="string"?x:JSON.stringify(x,null,2)}
-function hdr(){return {"X-Api-Key":$("key").value.trim()}}
-async function api(path,opt={}){if(!hdr()["X-Api-Key"])throw Error("API Key را وارد کنید");let r=await fetch(base+path,{...opt,headers:{...hdr(),...(opt.headers||{})}});let t=await r.text(),d;try{d=t?JSON.parse(t):null}catch{d=t}if(!r.ok)throw Error(`${r.status}: ${t}`);return d}
+function hdr(){return accessToken ? {"Authorization":`Bearer ${accessToken}`} : {}}
+async function api(path,opt={}){if(!accessToken)throw Error("Login is required");let r=await fetch(base+path,{...opt,headers:{...hdr(),...(opt.headers||{})}});let t=await r.text(),d;try{d=t?JSON.parse(t):null}catch{d=t}if(!r.ok)throw Error(`${r.status}: ${t}`);return d}
+async function login(){try{let r=await fetch(`${base}/api/auth/login`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("username").value,password:$("password").value})});let d=await r.json();if(!r.ok)throw Error("Invalid username or password");accessToken=d.accessToken;localStorage.setItem("waterMeterAccessToken",accessToken);await loadMeters()}catch(e){out(e.message)}}
+function logout(){accessToken="";localStorage.removeItem("waterMeterAccessToken");out("Logged out")}
 async function loadMeters(){try{let [meters,cat]=await Promise.all([api("/api/meters"),api("/api/command-catalog")]);catalog=cat;$("meter").innerHTML=meters.map(x=>`<option>${x.serialNumber}</option>`).join("");$("selectedSerial").value=$("meter").value;renderFields();out({meters,catalog:cat})}catch(e){out(e.message)}}
 $("meter").onchange=()=>$("selectedSerial").value=$("meter").value;
 function renderFields(){

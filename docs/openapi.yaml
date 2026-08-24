@@ -4,17 +4,36 @@ info:
   version: 1.0.0
   description: |
     قرارداد API سرور مدیریت کنتور آب.
-    تمام مسیرهای زیر `/api` به هدر `X-Api-Key` نیاز دارند.
+    ابتدا از `/api/auth/login` توکن بگیرید؛ مسیرهای محافظت‌شده با `Authorization: Bearer <token>` قابل استفاده هستند. برای سازگاری، `X-Api-Key` نیز پذیرفته می‌شود.
 servers:
   - url: http://localhost:5080
     description: محیط محلی
 security:
-  - ApiKeyAuth: []
+  - BearerAuth: []
 tags:
   - name: Meters
   - name: Commands
   - name: Firmware
-paths:
+  paths:
+    /api/auth/login:
+      post:
+        tags: [Authentication]
+        security: []
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [username, password]
+                properties:
+                  username: { type: string }
+                  password: { type: string, format: password }
+        responses:
+          '200':
+            description: Access token
+          '401':
+            description: Invalid credentials
   /api/meters:
     get:
       tags: [Meters]
@@ -181,6 +200,10 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
     ApiKeyAuth:
       type: apiKey
       in: header
